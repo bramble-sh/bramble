@@ -1,9 +1,8 @@
 name: Desktop release
-
 # Builds, signs and publishes the desktop app for macOS, Linux and Windows as one release, so it
 # needs neither a Mac nor a YubiKey. docs/ci-releases.md has the trade.
 #
-# Four kinds of job, and only the last one holds anything that matters:
+# Five kinds of job, and only rpm and publish hold anything that matters:
 #
 # - **bump** runs the gate, commits the version through GitHub's API, and dispatches
 #   sign-windows.yml. The commit comes first, as on the local route, because that workflow builds
@@ -11,19 +10,21 @@ name: Desktop release
 # - **linux**, on native amd64 and arm64 runners, builds in the same Debian container as the local
 #   route. Neither holds a secret: the bundler will not emit updater artifacts unsigned, so their
 #   AppImages carry a throwaway signature that the publish job replaces.
+# - **rpm** signs the RPMs with the APT repository's key, in that key's own environment, so it is a
+#   second approval. Publish only ever receives the signed copies. docs/apt-releases.md.
 # - **macos** compiles both Apple slices and hands over the binaries, holding nothing. Compiling is
 #   where every crate's build script and proc macro runs, so it happens away from the keys; on
 #   macOS signing happens while bundling, not while compiling, which is what lets the two split.
-# - **publish**, on macOS, is the one approval and the only job the updater key ever reaches, so it
+# - **publish**, on macOS, is the only job the updater key ever reaches, so it
 #   runs first-party actions only (Rust comes from the image's rustup, pnpm from corepack). It
 #   bundles, codesigns and notarizes macOS from the handed-over binaries, re-signs the AppImages,
-#   waits for SignPath and re-signs the installer, verifies every updater signature against the
+#   collects the Authenticode-signed installer and re-signs it, verifies every updater signature against the
 #   public key compiled into the app, and publishes. The update manifest is committed after the
 #   release exists, which deploys the website on its own: that commit is made with the release
 #   app's token, and an app's commits fire push workflows where this workflow's token cannot.
 #
-# Windows keeps its own approval, in SignPath, which signs the installer with a certificate this
-# repository never holds. The APT repository is still signed from a Mac: its key lives on a
+# The Windows installer is Authenticode-signed in sign-windows.yml, through Azure Artifact Signing
+# (an OIDC token, no stored credential) or SignPath (its own approval), per WINDOWS_SIGNER. The APT repository is still signed from a Mac: its key lives on a
 # YubiKey and has not moved yet (`pnpm run publish:apt --release <tag>`).
 #
 # `pnpm run release desktop <version>` dispatches this and watches it. A dry run commits nothing and
@@ -49,6 +50,11 @@ on:
         required: false
         default: ""
         type: string
+      publish_release_notes:
+        description: "Email the notes to subscribers and post them on the blog, once the last release of this batch is out (approved separately, at most once a week)"
+        required: false
+        default: false
+        type: boolean
       skip:
         description: "Platforms to leave out, comma-separated: macos, linux, windows (blank = none)"
         required: false
@@ -67,6 +73,18 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  # Does nothing. Running at all is how publish-release-notes.yml learns this release asked to be
+  # published: the API shows a run's jobs, not its inputs. A static name, since a skipped job shows
+  # its source.
+  publish_release_notes:
+    name: Publish release notes
+    if: ${{ inputs.publish_release_notes && !inputs.dry_run }}
+    runs-on: ubuntu-latest
+    permissions: {}
+    timeout-minutes: 1
+    steps:
+      - run: echo "publish-release-notes.yml drafts once the last release that asked for it is out"
+
   bump:
     name: ${{ (inputs.dry_run || contains(inputs.skip, 'windows')) && 'Gate and bump' || 'Gate, bump, start Windows' }}
     runs-on: ubuntu-24.04
@@ -109,8 +127,8 @@ jobs:
       - name: Install JS deps
         run: pnpm install --frozen-lockfile
 
-      # The ruleset on main refuses GITHUB_TOKEN, which it evaluates as the GitHub Actions app: a
-      # personal repository cannot add that app to a bypass list. This one can be, and carries
+      # The ruleset on main refuses GITHUB_TOKEN, which it evaluates as the GitHub Actions app, and
+      # exempting that app would exempt every workflow. This one is on the bypass list and carries
       # contents:write and nothing else, so it may commit and may do nothing else. docs/ci-releases.md.
       - name: Token that may commit to main
         id: commit-token
@@ -127,9 +145,9 @@ jobs:
           SKIP: ${{ inputs.skip }}
           GH_TOKEN: ${{ github.token }}
           BRAMBLE_COMMIT_TOKEN: ${{ steps.commit-token.outputs.token }}
-          # Whether sign-windows.yml could sign anything, without handing this job the token: the
-          # comparison happens in the expression, and only its answer reaches the step.
-          SIGNPATH_READY: ${{ secrets.SIGNPATH_API_TOKEN != '' && vars.SIGNPATH_ORGANIZATION_ID != '' && vars.SIGNPATH_PROJECT_SLUG != '' && vars.SIGNPATH_SIGNING_POLICY_SLUG != '' }}
+          # Whether sign-windows.yml could sign anything with the signer WINDOWS_SIGNER picks, without
+          # handing this job SignPath's token: only the comparison's answer reaches the step.
+          WINDOWS_SIGNING_READY: ${{ ((vars.WINDOWS_SIGNER == '' || vars.WINDOWS_SIGNER == 'azure') && vars.AZURE_CLIENT_ID != '' && vars.AZURE_TENANT_ID != '' && vars.AZURE_SIGNING_ENDPOINT != '' && vars.AZURE_SIGNING_ACCOUNT != '' && vars.AZURE_CERTIFICATE_PROFILE != '') || (vars.WINDOWS_SIGNER == 'signpath' && secrets.SIGNPATH_API_TOKEN != '' && vars.SIGNPATH_ORGANIZATION_ID != '' && vars.SIGNPATH_PROJECT_SLUG != '' && vars.SIGNPATH_SIGNING_POLICY_SLUG != '') }}
         run: |
           set -euo pipefail
           flags=(--runner-bump)
@@ -195,8 +213,66 @@ jobs:
           name: linux-${{ matrix.arch }}
           path: |
             dist-linux/deb/*.deb
-            dist-linux/rpm/*.rpm
             dist-linux/appimage/*.AppImage
+          if-no-files-found: error
+          retention-days: 7
+
+      # Under its own name, which publish never downloads.
+      - name: Hand off the RPM for signing
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: rpm-unsigned-${{ matrix.arch }}
+          path: dist-linux/rpm/*.rpm
+          if-no-files-found: error
+          retention-days: 7
+
+  rpm:
+    name: Sign the RPMs
+    needs: [bump, linux]
+    if: ${{ !contains(inputs.skip, 'linux') }}
+    runs-on: ubuntu-24.04
+    # The key apt-release.yml signs with, so first-party actions only, as there.
+    environment: apt-release
+    permissions:
+      contents: read
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.bump.outputs.sha }}
+          persist-credentials: false
+
+      - name: Setup Node
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+          package-manager-cache: false
+
+      - name: Install rpm
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends rpm
+
+      - name: Receive the RPMs
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          pattern: rpm-unsigned-*
+          merge-multiple: true
+          path: dist-linux/rpm/
+
+      - name: Sign and check against the shipped keyring
+        env:
+          BRAMBLE_APT_GPG_KEY: F6A840761E00875560B1CA1AC265880E1ED5826E
+          APT_GPG_PRIVATE_KEY: ${{ secrets.APT_GPG_PRIVATE_KEY }}
+          APT_GPG_PASSPHRASE: ${{ secrets.APT_GPG_PASSPHRASE }}
+        run: node scripts/sign-rpm.ts
+
+      - name: Hand off the signed RPMs
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: rpm-signed
+          path: dist-linux/rpm/*.rpm
           if-no-files-found: error
           retention-days: 7
 
@@ -275,18 +351,18 @@ jobs:
     # Static, unlike the bump job's: a skipped job never evaluates its name, so an expression here
     # shows up in the UI as its own source whenever this job does not run.
     name: Sign and publish
-    needs: [bump, linux, macos]
+    needs: [bump, linux, rpm, macos]
     # Runs when a platform was skipped on purpose, not only when every build succeeded: a needs-job
     # that is skipped otherwise skips everything after it too.
-    if: ${{ !cancelled() && needs.bump.result == 'success' && (needs.linux.result == 'success' || needs.linux.result == 'skipped') && (needs.macos.result == 'success' || needs.macos.result == 'skipped') }}
+    if: ${{ !cancelled() && needs.bump.result == 'success' && (needs.linux.result == 'success' || needs.linux.result == 'skipped') && (needs.rpm.result == 'success' || needs.rpm.result == 'skipped') && (needs.macos.result == 'success' || needs.macos.result == 'skipped') }}
     runs-on: macos-26
     # The approval gate, and the only job holding the updater key.
     environment: desktop-release
     permissions:
       contents: write # the tag, the release and the manifest commit
       actions: read # collecting the Windows installer from sign-windows.yml
-    # Bundling, codesigning and notarization, then as long as SignPath's approval takes: the sign
-    # job waits up to five hours for it, so this is GitHub's six-hour maximum.
+    # Bundling, codesigning and notarization, then, with SignPath, as long as its approval takes: the
+    # sign job waits up to five hours for it, so this is GitHub's six-hour maximum.
     timeout-minutes: 360
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -345,8 +421,15 @@ jobs:
           merge-multiple: true
           path: dist-linux/
 
-      # The ruleset on main refuses GITHUB_TOKEN, which it evaluates as the GitHub Actions app: a
-      # personal repository cannot add that app to a bypass list. This one can be, and carries
+      - name: Receive the signed RPMs
+        if: ${{ !contains(inputs.skip, 'linux') }}
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: rpm-signed
+          path: dist-linux/rpm/
+
+      # The ruleset on main refuses GITHUB_TOKEN, which it evaluates as the GitHub Actions app, and
+      # exempting that app would exempt every workflow. This one is on the bypass list and carries
       # contents:write and nothing else, so it may commit and may do nothing else. docs/ci-releases.md.
       - name: Token that may commit to main
         id: commit-token

@@ -7,7 +7,7 @@
 
 import { maybeCommitCapture, onPasswordEnter } from "./capture";
 import { api } from "./content-api";
-import { handleCornerPromptShow, queryCornerPrompt } from "./corner-prompt";
+import { handleCornerField, handleCornerPromptShow, queryCornerPrompt } from "./corner-prompt";
 import {
 	anchorIsLive,
 	cardFieldsPresent,
@@ -16,6 +16,7 @@ import {
 	deepActiveElement,
 	hasInteractiveCaptcha,
 	isCandidate,
+	isRendered,
 	kindOf,
 	pageUsesShadowDom,
 } from "./detection";
@@ -33,6 +34,7 @@ import {
 } from "./fill";
 import { installFrameRelay, type RelayRect } from "./frame-relay";
 import type { AliasRowState } from "./html/dropdown-alias";
+import { isLegible } from "./legibility";
 import { onTeardown, safeRequest, safeSendMessage } from "./lifecycle";
 import {
 	holdGeneratedPassword,
@@ -101,9 +103,13 @@ type TargetKind = "login" | "card" | "otp";
 type ActiveFill = {
 	target: HTMLInputElement;
 	targetKind: TargetKind;
+	/** A launch claim, which nobody clicked for, so a page script moving focus doesn't cancel it. */
+	launch?: boolean;
 };
 
 let activeFill: ActiveFill | null = null;
+/** This tab holds a launch grant the user hasn't taken over from yet. */
+let launchWatch = false;
 
 function cancelFill(): void {
 	activeFill = null;
@@ -121,6 +127,11 @@ function cancelOperations(): void {
 
 function documentIsActive(): boolean {
 	return document.visibilityState === "visible" && document.hasFocus();
+}
+
+/** For a launch, which nobody clicked in this document: a frame doesn't have focus on load. */
+function documentIsVisible(): boolean {
+	return document.visibilityState === "visible";
 }
 
 // --- Picker placement -------------------------------------------------------
@@ -226,6 +237,7 @@ function showMatchesFor(
 		suggest?: { password: string };
 		alias?: AliasRowState;
 		carriedId?: string;
+		newLogin?: boolean;
 	},
 ): void {
 	if (matches.length === 0 && !opts?.suggest && !opts?.alias) return;
@@ -248,6 +260,7 @@ function showMatchesFor(
 		suggest: opts?.suggest,
 		alias: opts?.alias,
 		carriedId: opts?.carriedId,
+		newLogin: opts?.newLogin,
 	});
 	armRelayFallback(() => showMatchesFor(matches, field, opts));
 }
@@ -400,11 +413,15 @@ function payloadMatchesTarget(
 	return payload.kind === "login" && !otpOnly;
 }
 
-function delayedSubmitIsEligible(passwordField: HTMLInputElement, generation: number): boolean {
+function delayedSubmitIsEligible(
+	passwordField: HTMLInputElement,
+	generation: number,
+	pageIsLive: () => boolean,
+): boolean {
 	invalidatePageFields();
 	return (
 		generation === submitGeneration &&
-		documentIsActive() &&
+		pageIsLive() &&
 		passwordField.isConnected &&
 		passwordField.ownerDocument === document &&
 		!passwordField.disabled &&
@@ -418,8 +435,9 @@ async function continueAutoSubmit(
 	passwordField: HTMLInputElement,
 	generation: number,
 	sessionGeneration: number,
+	pageIsLive: () => boolean,
 ): Promise<void> {
-	if (!delayedSubmitIsEligible(passwordField, generation)) return;
+	if (!delayedSubmitIsEligible(passwordField, generation, pageIsLive)) return;
 	const response = await safeRequest<AutofillSubmitRevalidationResponse>({
 		type: "AUTOFILL_REVALIDATE_SUBMIT",
 		sessionGeneration,
@@ -427,7 +445,7 @@ async function continueAutoSubmit(
 	if (
 		!response?.ok ||
 		response.data.sessionGeneration !== sessionGeneration ||
-		!delayedSubmitIsEligible(passwordField, generation)
+		!delayedSubmitIsEligible(passwordField, generation, pageIsLive)
 	) {
 		return;
 	}
@@ -437,25 +455,27 @@ async function continueAutoSubmit(
 function applySelectResponse(
 	intent: ActiveFill,
 	response: AutofillSelectResponse | undefined,
-): void {
+	pageIsLive: () => boolean = documentIsActive,
+): boolean {
 	// Consume before validating or filling: a response can never be replayed locally.
-	if (activeFill !== intent) return;
+	if (activeFill !== intent) return false;
 	activeFill = null;
-	if (!response?.ok) return;
+	if (!response?.ok) return false;
 	const data = responsePayload(response.data);
-	if (!data || !documentIsActive() || currentTargetKind(intent.target) !== intent.targetKind)
-		return;
-	if (!payloadMatchesTarget(intent.targetKind, data.payload, data.otpOnly)) return;
+	if (!data || !pageIsLive() || currentTargetKind(intent.target) !== intent.targetKind) {
+		return false;
+	}
+	if (!payloadMatchesTarget(intent.targetKind, data.payload, data.otpOnly)) return false;
 
 	picker.removeDropdown();
 	if (data.payload.kind === "card") {
 		fillCard(data.payload, data.isAuto);
 		fillCustomFields(data.payload.customFields, data.isAuto);
-		return;
+		return true;
 	}
 	if (data.otpOnly) {
 		fillOtp(data.payload.totp);
-		return;
+		return true;
 	}
 	const { filled, passwordField } = fillForm(
 		data.payload.username,
@@ -465,11 +485,12 @@ function applySelectResponse(
 	);
 	fillCustomFields(data.payload.customFields, data.isAuto);
 	fillOtp(data.payload.totp);
-	if (!filled || !data.payload.autoSubmit || !passwordField) return;
+	if (!filled || !data.payload.autoSubmit || !passwordField) return true;
 	const generation = ++submitGeneration;
 	setTimeout(() => {
-		void continueAutoSubmit(passwordField, generation, data.sessionGeneration);
+		void continueAutoSubmit(passwordField, generation, data.sessionGeneration, pageIsLive);
 	}, 50);
+	return true;
 }
 
 /**
@@ -607,7 +628,12 @@ function showLoginPicker(field: HTMLInputElement, logins: MatchSummary[]): void 
 		removePicker();
 		return;
 	}
-	showMatchesFor(visible, field);
+	// Under the site's logins, a way to save another one (#213), where accounts are chosen.
+	showMatchesFor(
+		visible,
+		field,
+		field === getPageFields().login.username ? { newLogin: true } : undefined,
+	);
 }
 
 /**
@@ -682,6 +708,128 @@ function selectMatch(
 	}).then((response) => applySelectResponse(intent, response));
 }
 
+/** The password field a launch may fill: rendered, empty, and not on a form setting a password. */
+function launchField(): HTMLInputElement | null {
+	invalidatePageFields();
+	const field = getPageFields().login.password;
+	if (!field || field.value || field.disabled || field.readOnly || !isRendered(field)) return null;
+	// A change form's first box is the current password, which alone reads as a login.
+	if (signupPasswordFields(field).some((other) => other !== field)) return null;
+	return shouldSuggestPassword(field, { hasExistingLogins: true }) ? null : field;
+}
+
+/** Stop a live grant from filling anything after the user has moved on. */
+function endLaunch(): void {
+	if (!launchWatch) return;
+	launchWatch = false;
+	if (cachedResult) cachedResult.launch = false;
+	safeSendMessage({ type: "AUTOFILL_LAUNCH_END" });
+}
+
+/** A page with no fields never queries, so the top frame asks once whether to watch. */
+function watchForLaunch(): void {
+	if (window !== window.top) return;
+	void safeRequest<{ ok: boolean; data?: { live?: boolean } }>({
+		type: "AUTOFILL_LAUNCH_LIVE",
+	}).then((response) => {
+		if (response?.ok && response.data?.live) launchWatch = true;
+	});
+}
+
+/** Spend this tab's launch grant if this page qualifies. True while a claim is out. */
+function claimLaunch(): boolean {
+	if (activeFill?.launch) return true;
+	if (!cachedResult?.launch || activeFill || !documentIsVisible()) return false;
+	const inFrame = window !== window.top;
+	// The top frame can only vouch for its own children.
+	if (inFrame && window.parent !== window.top) return false;
+	const target = launchField();
+	const targetKind = target ? currentTargetKind(target) : null;
+	if (!target || targetKind !== "login") return false;
+	const intent: ActiveFill = { target, targetKind, launch: true };
+	activeFill = intent;
+	removePicker();
+	const size = inFrame
+		? { frameWidth: window.innerWidth, frameHeight: window.innerHeight }
+		: undefined;
+	void safeRequest<AutofillSelectResponse>({ type: "AUTOFILL_LAUNCH_CLAIM", payload: size }).then(
+		(response) => {
+			const filled = applySelectResponse(intent, response, documentIsVisible);
+			if (response?.ok) {
+				launchWatch = false;
+				if (cachedResult) cachedResult.launch = false;
+			}
+			if (filled) {
+				silenceAutoOpen = true;
+				return;
+			}
+			const field = focusedCandidate();
+			if (field) showFor(field);
+		},
+	);
+	return true;
+}
+
+/** The top frame's half of a frame's claim. See docs/launch-and-fill.md. */
+function launchTopCheck(size: { frameWidth: number; frameHeight: number }): {
+	hasPassword: boolean;
+	frameVisible: boolean;
+} {
+	invalidatePageFields();
+	const password = getPageFields().login.password;
+	return {
+		hasPassword: !!password && isRendered(password),
+		frameVisible: Array.from(document.querySelectorAll("iframe")).some(
+			(frame) =>
+				Math.abs(frame.clientWidth - size.frameWidth) <= 2 &&
+				Math.abs(frame.clientHeight - size.frameHeight) <= 2 &&
+				isLegible(frame),
+		),
+	};
+}
+
+/**
+ * The login the fill shortcut takes: the first whose username starts with what is in the username
+ * field, else whose name does, else the site's first. Typing "ab" then pressing it fills that one.
+ */
+function shortcutPick(logins: MatchSummary[], typed: string): MatchSummary | undefined {
+	const prefix = typed.trim().toLowerCase();
+	const starts = (text: string) => text.toLowerCase().startsWith(prefix);
+	if (prefix) {
+		const match = logins.find((l) => starts(l.secondary)) ?? logins.find((l) => starts(l.name));
+		if (match) return match;
+	}
+	return logins[0];
+}
+
+/**
+ * The fill shortcut (#215): fill this page's login, the one `shortcutPick` chooses. Every frame of
+ * the tab gets it; only the one holding focus answers. Asked fresh rather than from the cache: with
+ * "Autofill on web pages" off this frame holds nothing, and the background answers only because the
+ * shortcut was just pressed in this tab (fill-shortcut.ts).
+ */
+async function fillFromShortcut(): Promise<void> {
+	if (!document.hasFocus() || deepActiveElement() instanceof HTMLIFrameElement) return;
+	invalidatePageFields();
+	const fields = getPageFields().login;
+	const into = [focusedCandidate(), fields.username, fields.password].find(
+		(field): field is HTMLInputElement =>
+			!!field && isRendered(field) && currentTargetKind(field) === "login",
+	);
+	if (!into) return;
+	const response = await safeRequest<AutofillQueryResponse>({
+		type: "AUTOFILL_QUERY",
+		hasLogin: true,
+		hasCard: false,
+		hasOtp: false,
+	});
+	if (!response?.ok || !isQueryResult(response.data)) return;
+	const { logins, locked, disabled } = response.data;
+	if (locked || disabled) return;
+	const pick = shortcutPick(logins, fields.username?.value ?? "");
+	if (pick) selectMatch(pick.id, false, false, into);
+}
+
 function focusedCandidate(): HTMLInputElement | null {
 	const focused = deepActiveElement();
 	return focused instanceof HTMLInputElement && isCandidate(getPageFields(), focused)
@@ -701,8 +849,8 @@ function isQueryResult(v: unknown): v is QueryResult {
 
 /**
  * Caches the query result and surfaces the picker if a candidate field is focused.
- * SECURITY: never fills without an explicit user gesture; secrets are fetched only
- * on AUTOFILL_SELECT, so a password is never injected into the DOM on load.
+ * SECURITY: never fills without an explicit user gesture; secrets are fetched only on
+ * AUTOFILL_SELECT, or AUTOFILL_LAUNCH_CLAIM after the user chose "Open website" for this login.
  */
 function handleResult(result: QueryResult | undefined): void {
 	// Background forwards `undefined` when offscreen erred; keep the last good
@@ -715,6 +863,8 @@ function handleResult(result: QueryResult | undefined): void {
 	cachedResult = result;
 	// Rides on the query so the suggestion below has a settings-shaped password to draw at once.
 	holdGeneratedPassword(result.generated);
+	if (result.launch) launchWatch = true;
+	if (claimLaunch()) return;
 
 	// User dismissed/selected: don't resurrect the dropdown from a re-query until
 	// they re-engage. cachedResult is still updated so the next focus sees fresh data.
@@ -958,6 +1108,16 @@ picker.onUseSuggested(() => {
  * one suggestion that can fail, and the failure is the only thing that tells someone whether to
  * fix a key, a plan or an allowance.
  */
+/** The "new login" row: Bramble's create form in a pop-out, for this site (#213). */
+function openNewLogin(): void {
+	cancelOperations();
+	silenceAutoOpen = true;
+	removePicker();
+	safeSendMessage({ type: "POPOUT_OPEN", payload: { reason: "new-login" } });
+}
+
+picker.onNewLogin(openNewLogin);
+
 picker.onUseAlias(() => {
 	cancelOperations();
 	const field = anchorField();
@@ -1063,6 +1223,7 @@ if (frameRelay.isTop()) {
 				showMatchesFor([], field, { suggest: { password: pw } });
 			});
 		},
+		onNewLogin: openNewLogin,
 	});
 }
 
@@ -1086,6 +1247,7 @@ document.addEventListener(
 	(e) => {
 		if (!e.isTrusted) return;
 		cancelOperations();
+		endLaunch();
 		// Drive the open iframe dropdown with the keyboard first.
 		if (picker.handleKey(e)) return;
 		if (handleRelayedKey(e)) return;
@@ -1098,6 +1260,11 @@ api.runtime.onMessage.addListener((message, _sender, sendResponse) => {
 	if (message?.type === "CORNER_PROMPT_SHOW") {
 		handleCornerPromptShow(message.payload as CornerPromptPayload);
 		sendResponse({ ok: true });
+		return false;
+	}
+
+	if (message?.type === "CORNER_FIELD") {
+		sendResponse(handleCornerField(message.payload));
 		return false;
 	}
 
@@ -1129,6 +1296,17 @@ api.runtime.onMessage.addListener((message, _sender, sendResponse) => {
 		fillForm(fill.username ?? "", fill.password, false, into);
 		if (fill.totp) fillOtp(fill.totp);
 		sendResponse({ ok: true });
+		return false;
+	}
+
+	if (message?.type === "AUTOFILL_SHORTCUT") {
+		void fillFromShortcut();
+		sendResponse({ ok: true });
+		return false;
+	}
+
+	if (message?.type === "AUTOFILL_LAUNCH_TOP_CHECK") {
+		sendResponse(launchTopCheck(message.payload));
 		return false;
 	}
 
@@ -1185,6 +1363,7 @@ api.runtime.onMessage.addListener((message, _sender, sendResponse) => {
 function bootstrap(): void {
 	queryAutofill();
 	queryCornerPrompt();
+	watchForLaunch();
 
 	mutationObserver = new MutationObserver((records) => onDomChange(records));
 	// Observe the stable document node so a page replacing body or documentElement
@@ -1206,6 +1385,7 @@ function bootstrap(): void {
 			if (
 				e.isTrusted &&
 				activeFill &&
+				!activeFill.launch &&
 				target !== activeFill.target &&
 				!isPickerInteractionTarget(target)
 			) {
@@ -1214,6 +1394,7 @@ function bootstrap(): void {
 			if (!couldBeCandidate(target) || !isKnownCandidate(target)) return;
 			// Explicit focus re-arms auto-display after any prior silence.
 			silenceAutoOpen = false;
+			if (claimLaunch()) return;
 			showFor(target);
 		},
 		true,
@@ -1297,6 +1478,8 @@ function bootstrap(): void {
 			if (e.isTrusted && activeFill && !isPickerInteractionTarget(target)) {
 				cancelOperations();
 			}
+			// A click into a login field is the form being used, not the user moving on.
+			if (e.isTrusted && !couldBeCandidate(target)) endLaunch();
 		},
 		true,
 	);

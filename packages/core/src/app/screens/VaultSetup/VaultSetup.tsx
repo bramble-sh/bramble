@@ -2,12 +2,15 @@ import { Trans } from "@lingui/react/macro";
 import { Loader2 } from "lucide-react";
 import { useState } from "react";
 import { useForm } from "react-hook-form";
+import { usePlatform } from "../../../context/PlatformContext";
 import { useCryptoErrorMessage } from "../../../hooks/useCryptoErrorMessage";
 import type { JoinUnlock } from "../../../hooks/useVault";
 import { BrambleGlyph } from "../../components/BrambleGlyph";
 import { SasDisplay } from "../../components/SasDisplay";
 import { BackButton } from "../../components/ui/back-button";
 import { RestoreShell } from "../Restore/RestoreShell";
+import { DesktopLinkBanner } from "./components/DesktopLinkBanner";
+import { DesktopLinkCard } from "./components/DesktopLinkCard";
 import { JoinCard } from "./components/JoinCard";
 import { ModeTabs } from "./components/ModeTabs";
 import { PasswordCard } from "./components/PasswordCard";
@@ -38,6 +41,8 @@ interface VaultSetupProps {
 	 * Called on success so the parent drives the terminal screen; `addedNew` marks a restored-into-new
 	 * locked vault vs the first vault unlocked in place. Absent where restore isn't supported (mobile). */
 	onRestore?: (result: { addedNew: boolean }) => void;
+	/** The desktop app's vault has arrived over the link; the parent drives the terminal screen. */
+	onDesktopLinked?: () => void;
 	/** Compact presentation for the single-window mobile host. */
 	mobile?: boolean;
 	/** Adding a parallel vault (vaults already exist): shows a name field and the "Add a vault"
@@ -60,6 +65,7 @@ export function VaultSetup({
 	joinSas,
 	joinSasEmoji,
 	onRestore,
+	onDesktopLinked,
 	mobile,
 	adding,
 	onBack,
@@ -70,9 +76,14 @@ export function VaultSetup({
 	const form = useForm<VaultSetupFormValues>({
 		defaultValues: { masterPassword: "", confirmPassword: "", label: "" },
 	});
-	// Fall a tab back to create when its panel isn't available (no join / no restore on this host).
+	const { desktopLink } = usePlatform();
+	// Fall a tab back to create when its panel isn't available (no join / no restore / no link here).
 	const effectiveMode: VaultSetupMode =
-		(mode === "join" && !onJoin) || (mode === "restore" && !onRestore) ? "create" : mode;
+		(mode === "join" && !onJoin) ||
+		(mode === "restore" && !onRestore) ||
+		(mode === "desktop" && !desktopLink)
+			? "create"
+			: mode;
 
 	const handleCreate = async ({ masterPassword, label }: VaultSetupFormValues) => {
 		setSubmitError(null);
@@ -94,8 +105,10 @@ export function VaultSetup({
 	};
 
 	// While the join runs (a new empty vault is briefly active, which would otherwise flip the
-	// tabs), show a dedicated connecting state instead of the setup form.
-	if (joining) {
+	// tabs), show a dedicated connecting state instead of the setup form. Not for the desktop link:
+	// its card runs the join and hands over when the vault opens, so it shows its own progress.
+	// Unmounting it mid-flow lost the hand-over, and the tab sat on the first step.
+	if (joining && effectiveMode !== "desktop") {
 		return (
 			<div className="min-h-screen bg-linear-to-br from-background via-background to-primary/5 flex items-center justify-center p-6">
 				<div className="w-full max-w-xl text-center">
@@ -148,14 +161,25 @@ export function VaultSetup({
 			<div className="w-full max-w-xl">
 				{onBack && <BackButton onClick={onBack} className="mb-3" />}
 				<SetupHeader mode={effectiveMode} mobile={mobile} adding={adding} />
-				<ModeTabs
-					mode={effectiveMode}
-					onChange={handleModeChange}
-					disabled={busy}
-					showRestore={!!onRestore}
-					showJoin={!!onJoin}
-				/>
-				{effectiveMode === "restore" && onRestore ? (
+				{effectiveMode !== "desktop" && desktopLink && (
+					<DesktopLinkBanner onLink={() => handleModeChange("desktop")} />
+				)}
+				{effectiveMode !== "desktop" && (
+					<ModeTabs
+						mode={effectiveMode}
+						onChange={handleModeChange}
+						disabled={busy}
+						showRestore={!!onRestore}
+						showJoin={!!onJoin}
+					/>
+				)}
+				{effectiveMode === "desktop" ? (
+					<DesktopLinkCard
+						from={adding ? "add" : "setup"}
+						onBack={() => handleModeChange("create")}
+						onLinked={onDesktopLinked}
+					/>
+				) : effectiveMode === "restore" && onRestore ? (
 					<RestoreShell embedded onRestored={onRestore} />
 				) : effectiveMode === "join" && onJoin ? (
 					<JoinCard onJoin={onJoin} busy={!!joining} error={joinError ?? null} mobile={mobile} />

@@ -2,8 +2,10 @@ import { expect, test } from "./fixtures";
 import {
 	addTapToUnlockKey,
 	addVirtualAuthenticator,
+	backgroundWorker,
 	createVault,
 	expectUnlocked,
+	gotoSync,
 	lock,
 	openPopup,
 } from "./helpers";
@@ -105,4 +107,140 @@ test("falls back to the other rpID when the first one has nothing to offer", asy
 	await lock(popup);
 	await popup.getByRole("button", { name: /Tap to unlock/i }).click();
 	await expectUnlocked(popup);
+});
+
+test("tapping a key that is not the vault's first still unlocks in one prompt", async ({
+	context,
+	extensionId,
+}) => {
+	// Every key has its own PRF salt. Unlock used to send only the first slot's salt, so tapping
+	// any other key returned the wrong secret and cost a second prompt. Removing the first key's
+	// credential makes the second one the only possible answer.
+	const setup = await context.newPage();
+	await createVault(setup, extensionId);
+
+	const popup = await context.newPage();
+	const { authenticatorId, cdp } = await addVirtualAuthenticator(popup, { hasPrf: true });
+	await openPopup(popup, extensionId);
+	await expectUnlocked(popup);
+
+	await addTapToUnlockKey(popup, "This device", "First key");
+	await expect(popup.getByText("First key")).toBeVisible();
+	const [first] = (await cdp.send("WebAuthn.getCredentials", { authenticatorId })).credentials;
+	await addTapToUnlockKey(popup, "This device", "Second key");
+	await expect(popup.getByText("Second key")).toBeVisible();
+	await cdp.send("WebAuthn.removeCredential", {
+		authenticatorId,
+		credentialId: first!.credentialId,
+	});
+
+	await lock(popup);
+	// Count prompts, not CTAP traffic: Chrome probes silently before asserting against a list.
+	await popup.evaluate(() => {
+		const get = navigator.credentials.get.bind(navigator.credentials);
+		(window as unknown as { prompts: number }).prompts = 0;
+		navigator.credentials.get = (opts) => {
+			(window as unknown as { prompts: number }).prompts++;
+			return get(opts);
+		};
+	});
+	await popup.getByRole("button", { name: /Tap to unlock/i }).click();
+	await expectUnlocked(popup);
+	expect(await popup.evaluate(() => (window as unknown as { prompts: number }).prompts)).toBe(1);
+});
+
+test("a key-only vault can confirm a sensitive action with its platform key", async ({
+	context,
+	extensionId,
+}) => {
+	// With the master password off, resetting the recovery code is authorized by a key tap.
+	// Platform keys live under the shared rpID, so that tap must ask there, as unlock does.
+	const setup = await context.newPage();
+	await createVault(setup, extensionId);
+
+	const popup = await context.newPage();
+	await addVirtualAuthenticator(popup, { hasPrf: true });
+	await openPopup(popup, extensionId);
+	await expectUnlocked(popup);
+
+	await addTapToUnlockKey(popup, "This device", "Only key");
+	await expect(popup.getByText("Only key")).toBeVisible();
+	await popup.getByRole("button", { name: /Require master password to unlock/i }).click();
+	await popup.getByRole("button", { name: "Disable master password" }).click();
+	await expect(popup.getByText(/Off\. You unlock by tapping a key/i)).toBeVisible();
+
+	await popup.getByRole("button", { name: "Reset", exact: true }).click();
+	await expect(popup.getByRole("heading", { name: "Your new recovery code" })).toBeVisible();
+	await expect(popup.getByText(/Couldn't verify your key/i)).toHaveCount(0);
+});
+
+test("a key-only vault is asked for a master password before it can add a device", async ({
+	context,
+	extensionId,
+}) => {
+	// Pairing hands over the vault and the re-entered master password signs the new device in, so a
+	// vault unlocked by keys alone must turn a password on first rather than pair unsigned.
+	const setup = await context.newPage();
+	await createVault(setup, extensionId);
+
+	const popup = await context.newPage();
+	await addVirtualAuthenticator(popup, { hasPrf: true });
+	await openPopup(popup, extensionId);
+	await expectUnlocked(popup);
+
+	await addTapToUnlockKey(popup, "This device", "Only key");
+	await expect(popup.getByText("Only key")).toBeVisible();
+	await popup.getByRole("button", { name: /Require master password to unlock/i }).click();
+	await popup.getByRole("button", { name: "Disable master password" }).click();
+	await expect(popup.getByText(/Off\. You unlock by tapping a key/i)).toBeVisible();
+
+	await popup.getByRole("button", { name: "Sync", exact: true }).click();
+	await popup.getByRole("button", { name: "Add a device", exact: true }).first().click();
+	await expect(popup.getByText("Adding a device needs a master password")).toBeVisible();
+	await expect(popup.getByText(/bramble-pair-1\./)).toHaveCount(0);
+
+	await popup.getByRole("button", { name: "Turn on master password" }).click();
+	await expect(popup.getByText(/Off\. You unlock by tapping a key/i)).toBeVisible();
+});
+
+test("a synced vault keeps its master password until this device leaves sync", async ({
+	context,
+	extensionId,
+}) => {
+	// Pairing requires a master password, and a synced vault can pair again at any time.
+	const setup = await context.newPage();
+	await createVault(setup, extensionId);
+	// What an enrollment writes, without a second real device.
+	const sw = await backgroundWorker(context);
+	await sw.evaluate(async () => {
+		const reg = (await chrome.storage.local.get("vault.registry"))["vault.registry"] as {
+			vaults: { id: string }[];
+		};
+		await chrome.storage.local.set({
+			[`sync.group:${reg.vaults[0]!.id}`]: {
+				groupKey: "dGVzdC1ncm91cA==",
+				roster: { devices: [], revoked: [] },
+			},
+		});
+	});
+
+	const popup = await context.newPage();
+	await addVirtualAuthenticator(popup, { hasPrf: true });
+	await openPopup(popup, extensionId);
+	await expectUnlocked(popup);
+	await addTapToUnlockKey(popup, "This device", "Only key");
+	await expect(popup.getByText("Only key")).toBeVisible();
+
+	const toggle = popup.getByRole("button", { name: /Require master password to unlock/i });
+	await expect(toggle).toBeDisabled();
+	await expect(popup.getByText(/Pairing devices needs a master password/)).toBeVisible();
+
+	await gotoSync(popup);
+	await popup.getByRole("button", { name: "Disconnect" }).click();
+	await popup.getByRole("button", { name: "Confirm disconnect" }).click();
+	await popup.getByRole("button", { name: "Security", exact: true }).click();
+	await expect(toggle).toBeEnabled();
+	await toggle.click();
+	await popup.getByRole("button", { name: "Disable master password" }).click();
+	await expect(popup.getByText(/Off\. You unlock by tapping a key/i)).toBeVisible();
 });

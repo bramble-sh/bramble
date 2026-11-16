@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import type { Entry, EntryData, LoginEntryData } from "../hooks/useVault";
 import {
 	compareHlc,
@@ -12,14 +12,16 @@ import {
 } from "../sync";
 import { fileRecord } from "../test/vault-fixtures";
 import type { EncryptedEntry } from "../vault-format";
+import { decodeVaultBlob } from "../vault-format";
 import {
 	conflictsOf,
 	type OpenedVersion,
 	type VaultEntries,
 	vaultEntriesFromPayload,
 } from "./entry-mutations";
-import { harness } from "./entry-mutations.harness";
+import { harness, twoWindows } from "./entry-mutations.harness";
 import { effectivePartStamps, PART_STAMP_FIELDS } from "./parts";
+import { MAX_PASSWORD_CHANGELOG } from "./password-changelog";
 
 /** A written entry's stamps as combining reads them (own-stamp ones are left out on disk). */
 const eff = (e: Entry) => effectivePartStamps(e, { hlc: e.partStampsAt! });
@@ -357,6 +359,126 @@ describe("createEntryMutations", () => {
 		);
 		const e = afterUpd.entries[0]!;
 		expect(e.type === "login" && e.passwordChangelog).toBeUndefined();
+	});
+
+	describe("importing", () => {
+		const withHistory = (n: number) =>
+			loginWith("moved", {
+				passwordChangelog: Array.from({ length: n }, (_, i) => ({
+					value: `old-${i}`,
+					changedAt: i + 1,
+				})),
+			});
+		const historyOf = (e: VaultEntries["entries"][number] | undefined) =>
+			e?.type === "login" ? e.passwordChangelog?.map((c) => c.value) : undefined;
+
+		it("takes no changelog from a file, which could otherwise plant old passwords", async () => {
+			const { mutations } = harness();
+			const next = await mutations.importMany(empty(), [withHistory(2)]);
+			expect(historyOf(next.entries[0])).toBeUndefined();
+		});
+
+		it("keeps the changelog of an entry moving between the user's own vaults", async () => {
+			const { mutations } = harness();
+			const next = await mutations.importMany(empty(), [withHistory(2)], [], {
+				ownVault: true,
+			});
+			expect(historyOf(next.entries[0])).toEqual(["old-0", "old-1"]);
+		});
+
+		it("still holds it to the cap", async () => {
+			const { mutations } = harness();
+			const next = await mutations.importMany(empty(), [withHistory(9)], [], {
+				ownVault: true,
+			});
+			expect(historyOf(next.entries[0])).toHaveLength(MAX_PASSWORD_CHANGELOG);
+		});
+	});
+
+	describe("importing copies of entries the vault already holds", () => {
+		const versionOf = (s: VaultEntries, id: string) => ({
+			hlc: s.stamps.get(id)!,
+			...s.causal.get(id),
+		});
+		const seeded = async () => {
+			const h = harness();
+			const state = await h.mutations.importMany(empty(), [login("a"), login("b")]);
+			return { h, state, id: state.entries[0]!.id, other: state.entries[1]!.id };
+		};
+
+		it("folds them in by the same write as the new entries", async () => {
+			const { h, state, id } = await seeded();
+			const writes = h.writes();
+			const next = await h.mutations.importMany(state, [login("c")], [], {
+				ownVault: true,
+				matched: [{ id, copy: { ...login("a"), tags: ["work"] } }],
+			});
+			expect(h.writes()).toBe(writes + 1);
+			expect(next.entries.map((e) => e.name)).toEqual(["a", "b", "c"]);
+			expect(next.entries[0]?.tags).toEqual(["work"]);
+		});
+
+		it("folds every copy of the one entry", async () => {
+			const { h, state, id } = await seeded();
+			const next = await h.mutations.importMany(state, [], [], {
+				matched: [
+					{ id, copy: { ...login("a"), tags: ["one"] } },
+					{ id, copy: { ...login("a"), tags: ["two"] } },
+				],
+			});
+			expect(next.entries[0]?.tags).toEqual(["one", "two"]);
+		});
+
+		it("stamps the change as an edit, so it syncs, and leaves the entry's date and the others", async () => {
+			const { h, state, id, other } = await seeded();
+			const before = state.entries[0]!;
+			const next = await h.mutations.importMany(state, [], [], {
+				matched: [{ id, copy: { ...login("a"), tags: ["work"] } }],
+			});
+			const stamp = next.stamps.get(id)!;
+			expect(compareHlc(stamp, state.stamps.get(id)!)).toBeGreaterThan(0);
+			expect(containsHistory(versionOf(next, id), versionOf(state, id))).toBe(true);
+			expect(next.entries[0]?.updatedAt).toBe(before.updatedAt);
+			expect(next.entries[0]?.partStampsAt).toEqual(stamp);
+			expect(next.stamps.get(other)).toEqual(state.stamps.get(other));
+			expect(next.entries[1]).toBe(state.entries[1]);
+		});
+
+		it("makes no new version of an entry the copy adds nothing to", async () => {
+			const { h, state, id } = await seeded();
+			const next = await h.mutations.importMany(state, [], [], {
+				matched: [{ id, copy: login("a") }],
+			});
+			expect(next.stamps.get(id)).toEqual(state.stamps.get(id));
+			expect(next.entries[0]).toBe(state.entries[0]);
+		});
+
+		it("restores an archived entry, and keeps old passwords from the copy", async () => {
+			const { h, state, id } = await seeded();
+			const archived = await h.mutations.setArchived(state, [id], true);
+			const next = await h.mutations.importMany(archived, [], [], {
+				matched: [
+					{
+						id,
+						copy: loginWith("a", { passwordChangelog: [{ value: "older", changedAt: 1 }] }),
+					},
+				],
+			});
+			const entry = next.entries[0]!;
+			expect(entry.archivedAt).toBeUndefined();
+			expect(entry.type === "login" && entry.passwordChangelog?.map((r) => r.value)).toEqual([
+				"older",
+			]);
+		});
+
+		it("takes nothing for an entry a sync took away meanwhile", async () => {
+			const { h, state, id } = await seeded();
+			const gone = await h.mutations.remove(state, id);
+			const next = await h.mutations.importMany(gone, [], [], {
+				matched: [{ id, copy: { ...login("a"), tags: ["work"] } }],
+			});
+			expect(next.entries.map((e) => e.name)).toEqual(["b"]);
+		});
 	});
 
 	it("ignores a caller-supplied changelog and derives it from the stored entry", async () => {
@@ -1340,5 +1462,190 @@ describe("createEntryMutations: saving from the version the form opened", () => 
 			opened,
 		);
 		expect(next.conflicts.map((e) => e.hlc)).toEqual([theirs]);
+	});
+});
+
+describe("createEntryMutations: two windows on one vault", () => {
+	const names = (entries: { name: string }[]) => entries.map((e) => e.name).sort();
+	/** Both windows loaded, and what each holds. */
+	async function opened() {
+		const w = twoWindows();
+		return { ...w, one: await w.first.load(), two: await w.second.load() };
+	}
+
+	it("a save from a stale window keeps what the other window saved", async () => {
+		const { first, second, one, two } = await opened();
+		await first.mutations.add(one, login("Saved first"));
+		await second.mutations.add(two, login("Saved second"));
+		const onDisk = await first.load();
+		expect(names(onDisk.entries)).toEqual(["Saved first", "Saved second"]);
+	});
+
+	it("a delete in the other window stays deleted", async () => {
+		const { first, second, one } = await opened();
+		const added = await first.mutations.add(one, login("Short lived"));
+		const stale = await second.load();
+		const id = added.entries[0]?.id as string;
+		await first.mutations.remove(added, id);
+
+		await second.mutations.add(stale, login("Saved second"));
+
+		const onDisk = await first.load();
+		expect(names(onDisk.entries)).toEqual(["Saved second"]);
+		expect(onDisk.tombstones.has(id)).toBe(true);
+	});
+
+	it("an edit in the other window survives a save of another entry", async () => {
+		const { first, second, one } = await opened();
+		const added = await first.mutations.add(one, login("Mine"));
+		const stale = await second.load();
+		const id = added.entries[0]?.id as string;
+		await first.mutations.update(added, id, loginWith("Mine", { password: "changed" }));
+
+		await second.mutations.add(stale, login("Other"));
+
+		const onDisk = await first.load();
+		const mine = onDisk.entries.find((e) => e.id === id) as { password?: string };
+		expect(mine.password).toBe("changed");
+		expect(onDisk.conflicts).toEqual([]);
+	});
+
+	it("a setting from the other window survives", async () => {
+		const { first, second, one, two } = await opened();
+		await first.mutations.setSetting(one, "pref.aliasProvider", { provider: "addy" });
+		await second.mutations.add(two, login("Other"));
+		const onDisk = await first.load();
+		expect(onDisk.settings?.["pref.aliasProvider"]?.value).toEqual({ provider: "addy" });
+	});
+
+	it("its own change wins over the same entry's unchanged copy on disk", async () => {
+		const { first, second, one } = await opened();
+		const added = await first.mutations.add(one, login("Mine"));
+		const stale = await second.load();
+		const id = added.entries[0]?.id as string;
+		await first.mutations.add(added, login("Unrelated"));
+
+		await second.mutations.update(stale, id, loginWith("Mine", { notes: "from the second" }));
+
+		const onDisk = await first.load();
+		const mine = onDisk.entries.find((e) => e.id === id) as { notes?: string };
+		expect(mine.notes).toBe("from the second");
+		expect(names(onDisk.entries)).toEqual(["Mine", "Unrelated"]);
+	});
+
+	it("keeps its own copy where the disk's has the same stamp, as with a use recorded here", async () => {
+		const { first, second, one } = await opened();
+		const added = await first.mutations.add(one, login("Mine"));
+		const stale = await second.load();
+		const id = added.entries[0]?.id as string;
+		await first.mutations.add(added, login("Unrelated"));
+
+		await second.mutations.touch(stale, id);
+
+		const onDisk = await first.load();
+		const mine = onDisk.entries.find((e) => e.id === id) as { lastUsedAt?: number };
+		expect(mine.lastUsedAt).toBeDefined();
+	});
+
+	it("asks for a reload after merging, and goes on merging until it has one", async () => {
+		const { first, second, one, two } = await opened();
+		await first.mutations.add(one, login("Saved first"));
+
+		const afterMerge = await second.mutations.add(two, login("Saved second"));
+		expect(second.reloads()).toBe(1);
+		expect(afterMerge.diskSeen).toBeNull();
+
+		// Before the reload lands, memory still lacks the first window's login.
+		await second.mutations.add(afterMerge, login("Saved third"));
+		expect(second.reloads()).toBe(2);
+		expect(names((await first.load()).entries)).toEqual([
+			"Saved first",
+			"Saved second",
+			"Saved third",
+		]);
+	});
+
+	it("asks for that reload last, after the index, which the caller's commit follows", async () => {
+		const { first, second, one, two } = await opened();
+		await first.mutations.add(one, login("Saved first"));
+		let reloadsDuringIndex = -1;
+		second.duringIndex.run = async () => {
+			reloadsDuringIndex = second.reloads();
+		};
+		await second.mutations.add(two, login("Saved second"));
+		expect(reloadsDuringIndex).toBe(0);
+		expect(second.reloads()).toBe(1);
+	});
+
+	it("compares the state it is writing, whatever a reload has since seen", async () => {
+		const { first, second, one, two } = await opened();
+		await first.mutations.add(one, login("Saved first"));
+		// Heard of it and reloaded, while this snapshot, taken before, was on its way to the disk.
+		await second.load();
+		await second.mutations.add(two, login("From the old snapshot"));
+		expect(names((await first.load()).entries)).toEqual(["From the old snapshot", "Saved first"]);
+	});
+
+	it("needs no merge or reload when nothing else wrote", async () => {
+		const { first, one } = await opened();
+		const decrypt = vi.spyOn(first.crypto, "decryptWithVek");
+		const added = await first.mutations.add(one, login("One"));
+		const again = await first.mutations.add(added, login("Two"));
+		await first.mutations.remove(again, again.entries[0]?.id as string);
+		expect(first.reloads()).toBe(0);
+		expect(decrypt).not.toHaveBeenCalled();
+	});
+
+	it("carries what it wrote as what the disk holds", async () => {
+		const { first, one, disk } = await opened();
+		const added = await first.mutations.add(one, login("One"));
+		expect(added.diskSeen).toEqual(decodeVaultBlob(disk.bytes).entriesCiphertext);
+	});
+
+	it("merges when it has no record of the disk at all", async () => {
+		const { first, second, one, two } = await opened();
+		await first.mutations.add(one, login("Saved first"));
+		await second.mutations.add({ ...two, diskSeen: null }, login("Saved second"));
+		expect(names((await first.load()).entries)).toEqual(["Saved first", "Saved second"]);
+	});
+
+	it("writes plainly where a platform doesn't track the disk", async () => {
+		const { first, second, one } = await opened();
+		const { diskSeen: _diskSeen, ...untracked } = one;
+		await first.mutations.add(one, login("Saved first"));
+		const decrypt = vi.spyOn(second.crypto, "decryptWithVek");
+		const written = await second.mutations.add(untracked, login("Saved second"));
+		expect(decrypt).not.toHaveBeenCalled();
+		expect(second.reloads()).toBe(0);
+		expect(written).not.toHaveProperty("diskSeen");
+	});
+
+	it("tells other windows once it's on disk, even if the index then refuses", async () => {
+		const { first, one } = await opened();
+		first.duringIndex.run = async () => {
+			throw new Error("no lease");
+		};
+		await expect(first.mutations.add(one, login("One"))).rejects.toThrow("no lease");
+		expect(first.notified.count).toBe(1);
+	});
+
+	it("writes nothing when the other window's save can't be opened", async () => {
+		const { first, second, one, two, disk } = await opened();
+		await first.mutations.add(one, login("Saved first"));
+		const before = disk.bytes;
+		vi.spyOn(second.crypto, "decryptWithVek").mockRejectedValue(new Error("wrong key"));
+		await expect(second.mutations.add(two, login("Saved second"))).rejects.toThrow("wrong key");
+		expect(disk.bytes).toBe(before);
+	});
+
+	it("tells other windows after each save, and not after a failed one", async () => {
+		const { first, one } = await opened();
+		const added = await first.mutations.add(one, login("One"));
+		expect(first.notified.count).toBe(1);
+		await first.mutations.add(added, login("Two"));
+		expect(first.notified.count).toBe(2);
+		vi.spyOn(first.crypto, "encryptWithVek").mockRejectedValue(new Error("no key"));
+		await expect(first.mutations.add(added, login("Three"))).rejects.toThrow("no key");
+		expect(first.notified.count).toBe(2);
 	});
 });

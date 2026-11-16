@@ -1,4 +1,5 @@
 import type { RosterPayload } from "@core/sync/roster";
+import type { PeerSource } from "@core/sync/transport/peer-session";
 import { describe, expect, it, vi } from "vitest";
 
 // Regression guard for the sync-never-converges bug. On Chrome the background service worker
@@ -11,7 +12,7 @@ import { describe, expect, it, vi } from "vitest";
 
 const { started, stub, enrolls, blobs } = vi.hoisted(() => {
 	const started: { peerSource: boolean; stopped: boolean }[] = [];
-	const enrolls: { stopped: boolean }[] = [];
+	const enrolls: { stopped: boolean; opts?: Record<string, unknown> }[] = [];
 	const blobs: { stopped: boolean }[] = [];
 	return { started, stub: {}, enrolls, blobs };
 });
@@ -48,8 +49,8 @@ vi.mock("@core/sync/transport/blob-sync", async (importOriginal) => ({
 }));
 
 vi.mock("@core/sync/transport/enroll-host", () => ({
-	startEnroll: async () => {
-		const session = { stopped: false };
+	startEnroll: async (_role: string, opts: Record<string, unknown>) => {
+		const session = { stopped: false, opts };
 		enrolls.push(session);
 		return {
 			stop: () => {
@@ -230,6 +231,45 @@ describe("sync sessions are pinned to a vault", () => {
 		await handleHostMessage("SYNC_ROSTER_STOP", { keepVaultId: "B" });
 		expect(enrolls).toHaveLength(1);
 		expect(enrolls[0]?.stopped).toBe(false);
+	});
+});
+
+describe("a join handed over by the desktop app", () => {
+	const join = (extra: Record<string, unknown> = {}) =>
+		handleHostMessage("SYNC_ENROLL_JOIN", {
+			relayUrl: "wss://relay.example",
+			groupKeyB64: "GROUP",
+			psk: "psk",
+			devicePrivB64: "priv",
+			inviterPub: "inviterPub",
+			ownEntry: roster.devices[0],
+			...extra,
+		});
+
+	it("joins over the link and shows no symbols, since nobody is asked to compare them", async () => {
+		await reset();
+		enrolls.length = 0;
+		await join({ viaLink: true });
+		expect(enrolls[0]?.opts?.peerSource).toBeDefined();
+		expect(enrolls[0]?.opts?.onSas).toBeUndefined();
+	});
+
+	it("offers the desktop app at once, since the joiner opens the handshake", async () => {
+		await reset();
+		enrolls.length = 0;
+		await join({ viaLink: true });
+		const source = enrolls[0]?.opts?.peerSource as PeerSource;
+		const peers: unknown[] = [];
+		await source({ onPeer: (p) => peers.push(p), report: () => {} });
+		expect(peers).toHaveLength(1);
+	});
+
+	it("keeps the relay and the symbols for any other join", async () => {
+		await reset();
+		enrolls.length = 0;
+		await join();
+		expect(enrolls[0]?.opts?.peerSource).toBeUndefined();
+		expect(enrolls[0]?.opts?.onSas).toBeDefined();
 	});
 });
 

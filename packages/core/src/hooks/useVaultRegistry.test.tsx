@@ -54,6 +54,53 @@ describe("VaultRegistryProvider", () => {
 		expect(v.activeId).toBe("a");
 	});
 
+	describe("with a vault hidden after a combine", () => {
+		const stored = {
+			vaults: [
+				{
+					id: "old",
+					label: "Personal",
+					createdAt: 1,
+					hidden: { at: 5, blobHash: "abc", into: "new" },
+				},
+				{ id: "new", label: "Home", createdAt: 2 },
+			],
+		};
+
+		it("lists only the others, and selects the one left without asking", async () => {
+			const { get } = mount(stored);
+			await vi.waitFor(() => expect(get().ready).toBe(true));
+			expect(get().vaults.map((v) => v.id)).toEqual(["new"]);
+			expect(get().activeId).toBe("new");
+		});
+
+		it("still calls the first registered vault the default, as the background does", async () => {
+			const { get } = mount(stored);
+			await vi.waitFor(() => expect(get().ready).toBe(true));
+			expect(get().defaultVaultId).toBe("old");
+		});
+
+		it("falls back to a listed vault for a flat sync key", async () => {
+			const { get } = mount({
+				vaults: [...stored.vaults, { id: "third", label: "", createdAt: 3 }],
+			});
+			await vi.waitFor(() => expect(get().ready).toBe(true));
+			expect(get().syncKey("sync.group")).toBe("sync.group:new");
+		});
+	});
+
+	it("renames against what is stored, not this window's older copy of it", async () => {
+		const stored = { vaults: [{ id: "a", label: "Mine", createdAt: 1 }] };
+		const { get, setMeta } = mount(stored);
+		await vi.waitFor(() => expect(get().activeId).toBe("a"));
+		// Another window added a vault since this one read the list.
+		stored.vaults.push({ id: "b", label: "Added elsewhere", createdAt: 2 });
+		await act(async () => get().rename("Renamed"));
+		const calls = setMeta.mock.calls as unknown as [string, { vaults: { id: string }[] }][];
+		const written = calls.at(-1)?.[1] as { vaults: { id: string }[] };
+		expect(written.vaults.map((v) => v.id)).toEqual(["a", "b"]);
+	});
+
 	it("does not auto-select when several vaults exist (picker)", async () => {
 		const { get } = mount(two);
 		await act(async () => {});
@@ -119,6 +166,20 @@ describe("VaultRegistryProvider", () => {
 				vaults: expect.arrayContaining([expect.objectContaining({ id: "a" })]),
 			}),
 		);
+	});
+
+	it("createRecord adds to the registry as stored, not to this window's copy", async () => {
+		const stored = addVault(two, { id: "c", label: "", createdAt: 3 });
+		const { get, setMeta } = mount(stored);
+		await act(async () => {});
+		// Another window deletes c, then this one adds a vault.
+		stored.vaults = stored.vaults.filter((v) => v.id !== "c");
+		await act(async () => {
+			await get().createRecord("");
+		});
+		const written = (setMeta.mock.calls.at(-1) as unknown[])[1] as typeof stored;
+		expect(written.vaults.map((v) => v.id)).not.toContain("c");
+		expect(written.vaults.at(-1)?.number).toBe(3);
 	});
 
 	it("is ready with no vaults and no active id on a fresh install", async () => {

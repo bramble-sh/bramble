@@ -1,36 +1,64 @@
 import { Trans } from "@lingui/react/macro";
-import { useNavigate, useSearch } from "@tanstack/react-router";
+import {
+	useElementScrollRestoration,
+	useLocation,
+	useNavigate,
+	useSearch,
+} from "@tanstack/react-router";
 import { Loader2 } from "lucide-react";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { usePlatform } from "../../context/PlatformContext";
 import { usePrefs } from "../../hooks/usePrefs";
 import { isLogin, useVault } from "../../hooks/useVault";
+import { useVaultRegistry } from "../../hooks/useVaultRegistry";
+import { reusedPasswordIds } from "../../vault/password-reuse";
 import { allTags } from "../../vault/tags";
+import { DefaultManagerCard } from "../components/DefaultManagerCard";
 import { ReviewNudgeCard } from "../components/ReviewNudgeCard";
+import { UpdateCard } from "../components/UpdateCard";
+import { useAppUpdate } from "../hooks/useAppUpdate";
+import { useDefaultPasswordManager } from "../hooks/useDefaultPasswordManager";
 import { useReviewNudge } from "../hooks/useReviewNudge";
 import { toListItem } from "../screens/VaultHome/list-item";
-import { VaultHome, type VaultListItem } from "../screens/VaultHome/VaultHome";
+import {
+	VAULT_LIST_SCROLL_ID,
+	VaultHome,
+	type VaultListItem,
+} from "../screens/VaultHome/VaultHome";
 import { DEFAULT_SEARCH, type VaultSearch } from "../screens/VaultHome/vault-search";
+
+/**
+ * Where the list was when a lock took it down. The router records a list's offset when a
+ * navigation leaves it, but a lock unmounts the list before navigating to the unlock screen.
+ * The unlock returns to the same href in the same vault, which reopens the list here, once.
+ */
+let lockedAt: { vault: string | undefined; href: string; offset: number } | undefined;
 
 /** Vault list route: projects entries into rows via their entry-mode descriptors. */
 export function VaultHomeRoute() {
 	const navigate = useNavigate();
+	const href = useLocation({ select: (l) => l.href });
+	const { activeId } = useVaultRegistry();
+	const scrollEntry = useElementScrollRestoration({ id: VAULT_LIST_SCROLL_ID });
+	const { prefs, loaded: prefsLoaded, update } = usePrefs();
 	// Per-field `??` (not spread): a `.catch`ed param can be present-but-undefined.
 	const raw = useSearch({ from: "/_app/vault" });
 	const search = useMemo<VaultSearch>(
 		() => ({
 			q: raw.q ?? DEFAULT_SEARCH.q,
 			type: raw.type ?? DEFAULT_SEARCH.type,
-			sort: raw.sort ?? DEFAULT_SEARCH.sort,
+			sort: raw.sort ?? prefs.vaultSort,
 			archived: raw.archived ?? DEFAULT_SEARCH.archived,
 			attachments: raw.attachments ?? DEFAULT_SEARCH.attachments,
 			health: raw.health ?? DEFAULT_SEARCH.health,
 		}),
-		[raw.q, raw.type, raw.sort, raw.archived, raw.attachments, raw.health],
+		[raw.q, raw.type, raw.sort, prefs.vaultSort, raw.archived, raw.attachments, raw.health],
 	);
-	const { entries, files, conflicts, ready, deleteEntry, touchEntry } = useVault();
+	const { entries, files, conflicts, ready, isLocked, deleteEntry, touchEntry } = useVault();
+	// Read when the list unmounts: true only if a lock is what took it down.
+	const locking = useRef(false);
+	locking.current = isLocked;
 	const { shell } = usePlatform();
-	const { prefs, update } = usePrefs();
 	// Hide stored breach flags when breach checking is off.
 	const showBreaches = prefs.breachCheckEnabled;
 
@@ -67,6 +95,10 @@ export function VaultHomeRoute() {
 	// asks) and usually null. Entries are the whole vault, archived included: an archived entry
 	// is still one this person put there, which is all the signal is measuring.
 	const reviewNudge = useReviewNudge(entries.length);
+	const appUpdate = useAppUpdate();
+	const defaultManager = useDefaultPasswordManager();
+	const offerDefaultManager =
+		prefsLoaded && !prefs.defaultManagerPromptDismissed && defaultManager?.state === "browser";
 
 	// The vault's tag vocabulary, for the search bar's `#` suggestions. Taken from ALL
 	// entries, archived included: an archived entry is still tagged, and the archive view
@@ -76,14 +108,23 @@ export function VaultHomeRoute() {
 	// Project each entry into a list row via its mode descriptor (type-agnostic).
 	const items = useMemo<VaultListItem[]>(() => {
 		const withFiles = new Set(files.map((f) => f.entryId));
+		const reused = reusedPasswordIds(entries);
 		return entries.map((entry) =>
-			toListItem(entry, showBreaches, conflicts.get(entry.id), withFiles.has(entry.id)),
+			toListItem(
+				entry,
+				showBreaches,
+				conflicts.get(entry.id),
+				withFiles.has(entry.id),
+				reused.has(entry.id),
+			),
 		);
 	}, [entries, files, showBreaches, conflicts]);
 
-	// replace: typing shouldn't stack history entries.
-	const onSearchChange = (patch: Partial<VaultSearch>) =>
-		navigate({ to: "/vault", search: (prev) => ({ ...prev, ...patch }), replace: true });
+	// replace: typing shouldn't stack history entries. A sort is also kept for the next open.
+	const onSearchChange = (patch: Partial<VaultSearch>) => {
+		if (patch.sort) void update("vaultSort", patch.sort);
+		return navigate({ to: "/vault", search: (prev) => ({ ...prev, ...patch }), replace: true });
+	};
 
 	const onSelectEntry = useCallback(
 		(entryId: string) => navigate({ to: "/vault/$entryId", params: { entryId } }),
@@ -97,7 +138,8 @@ export function VaultHomeRoute() {
 
 	// Until the vault has finished decrypting, `entries` is []; showing VaultHome
 	// here would flash "Your vault is empty" on a large vault. Show a loader instead.
-	if (!ready) {
+	// Prefs too, or the list would open in one order and re-sort into the remembered one.
+	if (!ready || !prefsLoaded) {
 		return (
 			<main className="flex-1 min-h-0 flex flex-col items-center justify-center gap-3 text-muted-foreground">
 				<Loader2 className="w-6 h-6 animate-spin" />
@@ -107,6 +149,9 @@ export function VaultHomeRoute() {
 			</main>
 		);
 	}
+
+	// Locking: unmount rather than render the list empty, which would scroll it to the top.
+	if (isLocked) return null;
 
 	return (
 		<VaultHome
@@ -123,7 +168,27 @@ export function VaultHomeRoute() {
 			tags={tags}
 			statsCollapsed={prefs.statsCollapsed}
 			onToggleStats={() => void update("statsCollapsed", !prefs.statsCollapsed)}
-			reviewNudge={reviewNudge ? <ReviewNudgeCard nudge={reviewNudge} /> : undefined}
+			initialScrollOffset={
+				lockedAt && lockedAt.vault === activeId && lockedAt.href === href
+					? lockedAt.offset
+					: scrollEntry?.scrollY
+			}
+			onLeave={(offset) => {
+				lockedAt = locking.current ? { vault: activeId, href, offset } : undefined;
+			}}
+			// The update first: it may carry a security fix.
+			nudge={
+				appUpdate ? (
+					<UpdateCard update={appUpdate} />
+				) : reviewNudge ? (
+					<ReviewNudgeCard nudge={reviewNudge} />
+				) : offerDefaultManager ? (
+					<DefaultManagerCard
+						onAccept={() => defaultManager?.set(true)}
+						onDismiss={() => void update("defaultManagerPromptDismissed", true)}
+					/>
+				) : undefined
+			}
 		/>
 	);
 }

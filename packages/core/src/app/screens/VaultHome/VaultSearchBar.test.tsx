@@ -42,13 +42,15 @@ const combobox = (name: string) => screen.getByRole<HTMLSelectElement>("combobox
 describe("VaultSearchBar", () => {
 	it("marks the active type filter chip", () => {
 		renderBar({ type: "card" });
-		expect(screen.getByRole("button", { name: "Cards" }).getAttribute("aria-pressed")).toBe("true");
+		expect(screen.getByRole("button", { name: "Payment card" }).getAttribute("aria-pressed")).toBe(
+			"true",
+		);
 		expect(screen.getByRole("button", { name: "All" }).getAttribute("aria-pressed")).toBe("false");
 	});
 
 	it("reports a filter change from a chip", () => {
 		const onChange = renderBar();
-		fireEvent.click(screen.getByRole("button", { name: "Notes" }));
+		fireEvent.click(screen.getByRole("button", { name: "Secure note" }));
 		expect(onChange).toHaveBeenCalledWith({ type: "note" });
 	});
 
@@ -66,7 +68,7 @@ describe("VaultSearchBar", () => {
 	// A SelectPill paints its own label over a transparent native select, so the
 	// two can drift apart in a way neither the select nor the styles reveal.
 	it.each([
-		["Filter by type", "note", "Notes"],
+		["Filter by type", "note", "Secure note"],
 		["Sort", "recent-updated", "Recently updated"],
 	])("shows the %s selection as its label", (name, value, label) => {
 		renderBar({ type: "note", sort: "recent-updated" });
@@ -181,5 +183,22 @@ describe("VaultSearchBar attachments toggle", () => {
 		expect(toggle()?.getAttribute("aria-pressed")).toBe("true");
 		fireEvent.click(toggle() as HTMLElement);
 		expect(onChange).toHaveBeenCalledWith({ attachments: false });
+	});
+});
+
+// #201
+describe("VaultSearchBar clear button", () => {
+	const clear = () => screen.queryByRole("button", { name: "Clear search" });
+
+	it("stays out of an empty search", () => {
+		renderBar();
+		expect(clear()).toBeNull();
+	});
+
+	it("empties the query and keeps focus in the field", () => {
+		const onChange = renderBar({ q: "bank" });
+		fireEvent.click(clear() as HTMLElement);
+		expect(onChange).toHaveBeenCalledWith({ q: "" });
+		expect(document.activeElement).toBe(screen.getByLabelText("Search vault"));
 	});
 });

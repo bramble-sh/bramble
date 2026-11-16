@@ -9,10 +9,15 @@ import { type LinkTransport, makeLinkPeerSource } from "./link-peer-source";
 function transport(over: Partial<LinkTransport> = {}) {
 	const sent: string[] = [];
 	const sinks = new Set<(frame: string) => void>();
+	const downSinks = new Set<() => void>();
 	let unsubscribed = 0;
 	return {
 		sent,
 		unsubscribed: () => unsubscribed,
+		/** The background saying the link has gone. */
+		down: () => {
+			for (const sink of downSinks) sink();
+		},
 		/** The app speaking, as the background would relay it. */
 		push: (frame: string) => {
 			for (const sink of sinks) sink(frame);
@@ -29,14 +34,21 @@ function transport(over: Partial<LinkTransport> = {}) {
 					sinks.delete(onFrame);
 				};
 			},
+			subscribeDown: (onDown: () => void) => {
+				downSinks.add(onDown);
+				return () => downSinks.delete(onDown);
+			},
 			...over,
 		} satisfies LinkTransport,
 	};
 }
 
-async function start(t: LinkTransport) {
+async function start(t: LinkTransport, opts?: { eager?: boolean }) {
 	const peers: PeerSession[] = [];
-	const source = await makeLinkPeerSource(t)({
+	const source = await makeLinkPeerSource(
+		t,
+		opts,
+	)({
 		onPeer: (p) => peers.push(p),
 		report: () => {},
 	});
@@ -45,6 +57,50 @@ async function start(t: LinkTransport) {
 
 beforeEach(() => {
 	vi.useRealTimers();
+});
+
+describe("the link going down", () => {
+	it("tells the session its peer has gone, rather than leaving it to time out", async () => {
+		// Until it times out, the session asks the background for the vault every 4 s, and each ask
+		// keeps awake the worker that has to be replaced before the link can come back.
+		const t = transport();
+		const { peers } = await start(t.transport);
+		t.push("hello");
+		let gone = 0;
+		peers[0]?.onGone?.(() => gone++);
+
+		t.down();
+
+		expect(gone).toBe(1);
+	});
+
+	it("takes the app straight back when it speaks again", async () => {
+		// A link that went down is not a refusal, so no cool-down: a page lending a pipe brings it
+		// back in a moment, and the user is looking at it.
+		const t = transport();
+		const { peers } = await start(t.transport);
+		t.push("hello");
+		peers[0]?.onGone?.(() => peers[0]?.close());
+
+		t.down();
+		t.push("hello again");
+
+		expect(peers).toHaveLength(2);
+	});
+
+	it("does not let a superseded peer's close touch the one after it", async () => {
+		const t = transport();
+		const { peers } = await start(t.transport);
+		t.push("hello");
+		t.down();
+		t.push("hello again");
+
+		// The first peer's handshake times out late, after the second has been offered.
+		peers[0]?.close();
+		t.push("still here");
+
+		expect(peers).toHaveLength(2);
+	});
 });
 
 describe("the desktop app as a sync peer", () => {
@@ -168,5 +224,18 @@ describe("teardown", () => {
 
 		expect(t.unsubscribed()).toBe(1);
 		expect(peers).toHaveLength(1);
+	});
+});
+
+describe("the vault copy over the link", () => {
+	it("offers the app at once, because this end opens the copy's handshake", async () => {
+		// The joining browser is the Noise initiator and the app only answers. Waiting for the app
+		// to speak first, as sync does, left both ends waiting until the invite expired.
+		const t = transport();
+		const { peers } = await start(t.transport, { eager: true });
+
+		expect(peers).toHaveLength(1);
+		peers[0]!.channel.send("msg1");
+		await vi.waitFor(() => expect(t.sent).toEqual(["msg1"]));
 	});
 });

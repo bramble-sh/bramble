@@ -174,7 +174,7 @@ for (const archive of archives) {
       signature: readFileSync(join(updaterDir, sig), "utf8").trim(),
       // Tags are `<version>-desktop` (the repo's shared namespace); the asset name is whatever
       // the bundler produced.
-      url: `https://github.com/flythenimbus/bramble/releases/download/${version}-desktop/${archive}`,
+      url: `https://github.com/bramble-sh/bramble/releases/download/${version}-desktop/${archive}`,
     };
 }
 
@@ -204,15 +204,14 @@ if (MAC) {
         : "linux-x86_64";
       platforms[key] = {
         signature: readFileSync(join(linuxDir, sig), "utf8").trim(),
-        url: `https://github.com/flythenimbus/bramble/releases/download/${version}-desktop/${image}`,
+        url: `https://github.com/bramble-sh/bramble/releases/download/${version}-desktop/${image}`,
       };
     }
   }
 }
 
 // The Windows half, on the same principle as the Linux one, but built on a GitHub runner rather
-// than here: SignPath will only Authenticode-sign an artifact whose whole build it can attribute
-// to the public repository (scripts/build-windows.ts explains the trade).
+// than here, where the signer can reach it (scripts/build-windows.ts explains the trade).
 //
 // Here the download and the updater artifact are the SAME file. macOS has a `.dmg` to click and a
 // separate `.app.tar.gz` for the updater, and Linux has a `.deb` and an AppImage; NSIS has one
@@ -229,7 +228,7 @@ if (MAC) {
       if (!files.includes(sig)) {
         console.error(
           `${installer} has no ${sig}. The Windows build must be signed for a release:\n` +
-            "  pnpm run build:windows -- --ci-start     (dispatch the build, approve it in SignPath)\n" +
+            "  pnpm run build:windows -- --ci-start     (dispatch the build and its signing)\n" +
             "  pnpm run build:windows -- --ci-collect   (download it, then sign it here)\n" +
             "A --unsigned build cannot be released: it carries a throwaway updater key.",
         );
@@ -238,7 +237,7 @@ if (MAC) {
       const key = triple.startsWith("aarch64") ? "windows-aarch64" : "windows-x86_64";
       platforms[key] = {
         signature: readFileSync(join(dir, sig), "utf8").trim(),
-        url: `https://github.com/flythenimbus/bramble/releases/download/${version}-desktop/${installer}`,
+        url: `https://github.com/bramble-sh/bramble/releases/download/${version}-desktop/${installer}`,
       };
     }
   }

@@ -10,7 +10,7 @@ describes what an acceptable contribution looks like, so you are not guessing.
   and changes to the vault format or crypto should be discussed before you write
   code. Bug reports and small fixes can go straight to a pull request.
 - **Found a security issue? Do not open a public issue.** Report it privately via
-  [GitHub Security Advisories](https://github.com/flythenimbus/bramble/security/advisories)
+  [GitHub Security Advisories](https://github.com/bramble-sh/bramble/security/advisories)
   or email. See [SECURITY.md](SECURITY.md).
 - **Read the design docs.** [docs/](docs/README.md) holds the reasoning behind the
   crypto, unlock flows, storage, and autofill. Code comments point there instead
@@ -37,6 +37,11 @@ pnpm run dev          # Chromium + Firefox extension and the website, together
 Individual dev targets: `pnpm run dev:chrome`, `pnpm run dev:firefox`,
 `pnpm run dev:website`, `pnpm run mobile:dev`. The iOS and Android apps
 additionally need Xcode or Android Studio; the browser extension does not.
+
+To try a built extension in a fresh browser profile, thrown away when the
+browser closes: `pnpm run:chromium` (Playwright's Chromium, loading
+`dist-chromium`) and `pnpm run:firefox` (web-ext, loading `dist-firefox`). Both
+reach the desktop app that ran last, so start that first to test the link.
 
 ### The desktop app on Windows
 
@@ -77,7 +82,7 @@ pnpm --filter @vault/platform-desktop exec tauri build --bundles nsis
 
 The installer lands in `src-tauri/target/release/bundle/nsis/`, unsigned: for a
 VM, not for anyone else. Release installers are built by CI and
-Authenticode-signed through SignPath; see
+Authenticode-signed through Azure Artifact Signing; see
 [docs/desktop-port.md](docs/desktop-port.md) and
 [docs/release-signing.md](docs/release-signing.md). While iterating, the app's
 local data (vault, logs, the browser-link manifest) lives under
@@ -162,7 +167,8 @@ Every push and pull request runs, in order: WASM build, WASM verification (a
 behavioural gate over the full crypto surface), workspace typecheck, Biome,
 i18n check, the full test suite, and an extension build. All of it must be green.
 CodeQL runs separately over JavaScript/TypeScript, Rust, Swift, and GitHub
-Actions.
+Actions. Pull requests also get the `CLA` check, red until every committer has
+signed [CLA.md](CLA.md) (see Licensing).
 
 You can reproduce the whole gate locally with `pnpm run typecheck && pnpm run
 ci:check && pnpm test`.
@@ -174,3 +180,19 @@ Bramble is GPLv3, with an additional permission for app stores (see
 restrictions the GPL alone does not allow. By contributing you agree that your
 contribution is licensed under the GPLv3 with that permission. See
 [LICENSE](LICENSE).
+
+[CLA.md](CLA.md) is the one-page agreement that records this. It is not a
+copyright assignment: you keep your copyright, and it gives nobody the right to
+relicense your work on other terms. `services/mailbox` is AGPLv3 and outside the
+permission, so a contribution there is AGPLv3 only.
+
+To sign, open your pull request and post the comment the bot asks for:
+
+```
+I have read the CLA Document and I hereby sign the CLA
+```
+
+The `CLA` check turns green and the signature is kept on the `cla-signatures`
+branch. You sign once; later pull requests are covered. Make your commits with
+an email address linked to your GitHub account, or the bot cannot match them to
+you.

@@ -84,9 +84,11 @@ own WebRTC, the browser link, and the whole release and packaging story below.
   is a query and grows anchored at its top-left. No results yet: that is the next slice.
 - **The browser link works end to end.** Verified in Vivaldi through both UIs: the desktop
   app shows a code, the extension takes it, and `Test` then reconnects over KK with no code.
+  (The code has since given way to an emoji link: see desktop-link-onboarding.md.)
   The chain is the desktop's socket, a native-messaging proxy Chrome spawns, a host manifest
   the app installs for every Chromium browser present, and the extension's own client. The
-  pairing key lives in the OS credential store; the allowlist is a file beside the vault.
+  pairing key lives in the OS credential store; the allowlist is a sealed file beside the
+  vaults, with a list per vault (a browser is served only while a vault it is linked to is open).
 - **The app outlives its main window.** Closing hides rather than destroys (on Wayland it
   destroys and the tray rebuilds it, which is the only way to be genuinely closed there; see
   the Wayland section), a tray icon is the route back, and on macOS the Dock icon follows the
@@ -302,6 +304,17 @@ inline). This makes spotlight the *primary* unlock surface, ahead of the main wi
 
 One wrinkle where this meets single-vault search: with several vaults and none unlocked, the prompt
 must pick one. Default to the last-unlocked vault, with a small switcher.
+
+### Auto-lock
+
+The "Auto-lock timeout" clock runs in the shell (`src-tauri/src/autolock.rs`), not the webview,
+for the same reason as the backup tick: the main window is usually hidden and a hidden webview's
+timers are throttled. It counts wall-clock time, so time asleep counts as inactivity. Activity is
+input in the main window or the panel (`src/auto-lock.ts`, reported at most every 10 s) and a fill
+the browser link serves; a link `query` does not count, since a page can send one on its own. On
+timeout the shell locks the VEK, clears the index and emits `vault://auto-locked`, which the main
+window turns into `markLocked`. Desktop offers no "Immediate": it has no moment the app stops being
+used, and the panel only works unlocked. A stored `-1` becomes 5 minutes at startup.
 
 ### The macOS activation trap
 
@@ -537,7 +550,7 @@ and mobile builds never pay for them, exactly as `webrtc` is gated for iOS.
 Require per-signature approval (biometric where available). The pitch: private keys never touch disk
 unencrypted and every use is explicitly approved.
 
-## Sync transport: the webview's own WebRTC, on macOS
+## Sync transport: the webview's own WebRTC, on macOS and Windows
 
 The plan here was to reuse the `webrtc` cargo feature (webrtc-rs), already device-proven on iOS,
 on the assumption that desktop webviews have inconsistent WebRTC support. **That assumption was
@@ -553,8 +566,38 @@ same snake_case names `@core/sync` calls, each one an `invoke` of a Rust command
 usual camelCase deliberately, because `@core/sync` was written against those names and renaming
 would only add a layer whose job is to undo the rename.
 
-Windows (WebView2, Chromium) is near-certain to work the same way; WebKitGTK is the open
-question `[unverified]`, and it is where webrtc-rs would come back if it comes back at all.
+Windows (WebView2, Chromium) is near-certain to work the same way. WebKitGTK does not.
+
+### Linux: native WebRTC, as on iOS
+
+WebKitGTK has no `RTCPeerConnection`, and no setting adds one. Checked in Docker on 2026-11-13
+with a GTK page and `WebKitSettings:enable-webrtc` both off and on, gstreamer's webrtcbin and nice
+installed: Debian 12 (2.50.6, the one the AppImage bundles), Debian 13 (2.54.0), Ubuntu 24.04 and
+26.04 (2.52.6), Fedora 45 (2.54.2). Undefined everywhere, and none of WebKit's 465 runtime
+features is a peer connection switch, so every distribution compiles it out. Until this was
+fixed a Linux desktop reached every device through relay-forward, could exchange files only with
+a browser on the same machine, and logged `found, but it needs a WebRTC connection` every 30
+seconds for each device's file session (issues #224 and #228).
+
+So the vault window runs on the engine the iOS app uses, the way iOS does:
+
+- `packages/core-rust/src/webrtc.rs` (webrtc-rs) under `webrtc-native`, the engine with no binding
+  layer. iOS's `webrtc` feature adds the uniffi exports on top. The desktop depends on it for
+  Linux only, so the macOS and Windows binaries don't carry it.
+- `src-tauri/src/native_webrtc.rs` wraps each call as a command, run on a blocking thread (each
+  can wait out its 15 s deadline), and forwards the engine's events to the vault window as one
+  `native-webrtc` event.
+- `src/native-webrtc.ts` installs `@core/sync/transport/native-rtc`, the shim iOS uses too, only
+  when the webview has no `RTCPeerConnection`, before anything starts sync. It first closes any
+  peers left by an earlier window: on Wayland closing the window destroys it, and the engine
+  lives on in this process.
+
+The engine resolves no mDNS candidates (disabled, as on iOS), but that costs nothing on a LAN:
+it offers raw addresses itself, so a browser that hides its own behind `.local` names still
+reaches it, and the engine learns the browser's real address from those checks. Checked in the
+harness with Chromium's hiding on and no STUN or TURN: connected in about a second, edits
+crossed. Two devices that can't reach each other's addresses need STUN or TURN either way, which
+the hosted relay hands out.
 
 **The release CSP has to allow the relay.** `connect-src` starts at `'self' ipc:
 http://ipc.localhost`, which blocks the relay WebSocket and the ICE-servers fetch. WebKit reports
@@ -963,16 +1006,14 @@ should be short and the result is only ever going into a VM. Tauri supports cros
 calls it a last resort. It cannot be Authenticode-signed, so it must not be released, and the
 script refuses to produce one without `--unsigned` for exactly that reason.
 
-**Releasing** builds on a GitHub runner instead, and the reason is provenance rather than build
-quality. Authenticode signing comes from [SignPath Foundation](https://signpath.org/), which is
-free for open source projects and issues a real Sectigo certificate; in exchange it verifies where
-a binary came from, and requires every job leading up to the signing request to have run on a
-GitHub-hosted agent, with the origin metadata supplied by GitHub rather than by the build script.
-A cross-compiled installer from a laptop cannot satisfy that, so Windows is the one artifact
-Bramble ships that is not built on the maintainer's machine.
+**Releasing** builds on a GitHub runner instead. Authenticode signing comes from
+[Azure Artifact Signing](https://learn.microsoft.com/azure/artifact-signing/), whose signtool
+plugin runs on Windows, and whose signing identity is reachable only through an OIDC token from
+`sign-windows.yml`'s `main`-only environment, with no stored secret. So Windows is the one
+artifact Bramble ships that is not built on the maintainer's machine.
 
 That trade is acceptable here and would not be on macOS, for one reason: **the updater key does
-not go with it.** SignPath signs for *Windows*; the minisign key signs for *the updater*, and only
+not go with it.** Azure signs for *Windows*; the minisign key signs for *the updater*, and only
 the second is the root of trust for every update the app will ever accept. So CI hands back an
 Authenticode-signed installer and `build-windows.ts --ci-collect` signs it locally, over the
 signed bytes. The order is not negotiable: Authenticode first, updater signature second. Reversed,
@@ -980,18 +1021,17 @@ the `.sig` describes a file that no longer exists and every Windows update fails
 
 ### How a release actually runs
 
-The Windows step is also the only one that waits on a human, since SignPath requires a maintainer
-to approve each signing request. So it is started first and collected last:
+The Windows build is the slowest step, so it is started first and collected last:
 
 1. `release.ts` pushes the `chore(release)` commit **before** the builds. This is the one place
    the desktop release differs from the other four platforms, and the Windows build forces it: a
    runner can only build a commit it can fetch, so a bump still sitting in the working tree would
-   have CI produce, and SignPath sign, an installer for the previous version. The workflow
+   have CI build and sign an installer for the previous version. The workflow
    re-reads the version out of `tauri.conf.json` and fails loudly if it does not match, so losing
    that race is noisy rather than silent.
 2. `--ci-start` dispatches `sign-windows.yml` and records the run id.
-3. macOS builds and notarizes locally; Linux builds in its container. The SignPath approval and
-   the notarization upload are waiting at the same time rather than one after the other.
+3. macOS builds and notarizes locally; Linux builds in its container. The Windows build and
+   the notarization upload run at the same time rather than one after the other.
 4. `--ci-collect` waits for the run, downloads the signed installer, and signs it with the
    YubiKey-held updater key.
 5. Only then is the tag pushed. A failed build leaves a `chore(release)` commit on main with no
@@ -1031,13 +1071,14 @@ Windows is the only platform where those are one file. macOS has a `.dmg` to cli
 `.app.tar.gz` for the updater; Linux has a `.deb` that cannot self-update and an AppImage that
 can. NSIS has one installer, which Tauri signs in place and the updater downloads and runs.
 
-Azure Artifact Signing was the other candidate and was rejected on cost: $9.99/month forever, for
-a dozen signatures a year, when SignPath costs nothing for a GPL project. Its advantage was that
-it can be driven from the Mac (via `jsign`) and so would not have forced the build into CI; that
-turned out to be the cheaper thing to give up. A traditional OV certificate is the fallback if
-SignPath ever declines, and it would mean signing on the Windows VM, since the CA/Browser Forum
-has required the key to live on hardware since 2023 and a smartcard cannot be driven from a
-cross-compile.
+SignPath Foundation (free for open source) was set up first; on 2026-11-10 Azure became the default
+because SignPath's production certificate had waited a month on the Foundation, every release
+would wait on a manual approval in its UI, and Windows would name SignPath Foundation as the
+publisher. SignPath stays wired up as the alternative (`WINDOWS_SIGNER=signpath`). Azure costs
+USD 9.99 a month and signs in seconds. It can also be driven from the Mac (via `jsign`), which would allow signing the
+cross-compiled build; that is not wired up, since the CI route already works. A traditional OV
+certificate is the fallback, and it would mean signing on the Windows VM, since the CA/Browser
+Forum has required the key to live on hardware since 2023.
 
 ### Homebrew
 
@@ -1059,7 +1100,7 @@ Four stanzas in it are decisions rather than boilerplate:
   Verified by deliberately breaking it: it reported `0.14.0`. `strategy :github_releases` fixed
   that and was what we submitted, but a homebrew-cask maintainer pointed out the lighter answer on
   review. With no strategy at all, livecheck auto-selects `Git`, rewrites the download URL to
-  `https://github.com/flythenimbus/bramble.git` and matches the regex against `git ls-remote`
+  `https://github.com/bramble-sh/bramble.git` and matches the regex against `git ls-remote`
   tags: one request rather than a walk through the releases API, same answer, because the regex was
   always anchored on `-desktop` rather than on anything the strategy did. What keeps this honest is
   the assertion in `test:brew` that livecheck's answer equals the update manifest's version.
@@ -1180,11 +1221,13 @@ globs reach into other applications' support directories.
 nixpkgs:
 
 ```bash
-nix build github:flythenimbus/bramble      # or `nix run`
+nix build github:bramble-sh/bramble      # or `nix run`
 ```
 
 and it exposes `overlays.default` for a system configuration. `pnpm run test:nix` builds it in a
-container and asserts the result, the way `test:apt` does for the Debian package.
+container and asserts the result, the way `test:apt` does for the Debian package. It turns the
+Nix sandbox on, which the `nixos/nix` image leaves off: unsandboxed, the build saw the image's CA
+bundle and passed while users' builds failed (#229).
 
 **A flake here rather than a nixpkgs submission, at least first.** nixpkgs is not a channel you
 publish to, it is one you submit to: a fix reaches users when a committer merges and Hydra builds,
@@ -1193,7 +1236,7 @@ to the same users on our own schedule, and CI can build it so it cannot rot. Ups
 a strict addition, and is the sort of thing a NixOS user in the community often does better than
 we would, since it comes with a per-release obligation to regenerate hashes.
 
-Four things about the derivation are worth knowing before changing it:
+Five things about the derivation are worth knowing before changing it:
 
 - **It builds from source, so nothing may be fetched at build time.** That is what caught
   `stage-proxy.mjs` assuming `target/release/`: Nix sets `CARGO_BUILD_TARGET` even for a native
@@ -1209,7 +1252,7 @@ Four things about the derivation are worth knowing before changing it:
   `got:` value from the mismatch error. That is automated now. `scripts/nix-hash.ts` does exactly
   that (`--check` to test, no argument to fix), and `nix-hash.yml` runs it on any push to main
   touching `pnpm-lock.yaml`, committing the result through the release app. It is triggered by
-  the lockfile rather than by a release on purpose: `nix run github:flythenimbus/bramble` builds
+  the lockfile rather than by a release on purpose: `nix run github:bramble-sh/bramble` builds
   main, not a tag, so a release is not a boundary that protects anyone. The hash was last left
   stale for a month across seven lockfile changes and four desktop releases, and an outside
   contributor found it rather than us.
@@ -1223,6 +1266,12 @@ Four things about the derivation are worth knowing before changing it:
   inherited: the wrapper would push our copy of the library onto the browser and file manager
   that `tauri-plugin-opener` spawns, ahead of their own `DT_RUNPATH`. `e2e/nix/build-test.sh`
   asserts the RUNPATH entry resolves, since `ldd` by construction cannot see a `dlopen`.
+- **The check phase runs in the sandbox: no CA roots, no network.** reqwest's rustls verifier
+  refuses to build a client without CA roots, even for the plain-HTTP loopback server in
+  `stream.rs`'s upload test, which then failed with "the request ended before its body was sent"
+  (#229). `nativeCheckInputs = [ cacert ]` points `SSL_CERT_FILE` at a CA bundle. With only a
+  loopback interface, the WebRTC engine gathers no candidates, so `native_webrtc`'s two-peer test
+  can never connect; `checkFlags` skips it.
 
 Users who would rather not build anything can run the published AppImage with
 `programs.appimage.enable`, which needs nothing from us.
@@ -1410,9 +1459,9 @@ TargetNotFound rather than no update. It is keyed under both arches instead.
    notarized, and the whole Linux channel is signed too (see [apt-releases.md](apt-releases.md)).
    `[the zero-prompt claim is still unobserved: it needs one signed build to be updated over
    another and the keychain to stay quiet, which no release has yet exercised]`
-6. ~~**webrtc-rs interop with the extension's browser WebRTC on desktop.**~~ Retired by not
-   happening: macOS WKWebView has its own WebRTC, so desktop talks to peers with the same browser
-   APIs the extension does. Returns only if WebKitGTK turns out to lack them.
+6. ~~**webrtc-rs interop with the extension's browser WebRTC on desktop.**~~ Retired on macOS
+   and Windows, whose webviews have their own WebRTC. It came back for Linux, whose WebKitGTK
+   lacks it: see [Linux: native WebRTC, as on iOS](#linux-native-webrtc-as-on-ios).
 
 ## Proposed plan
 

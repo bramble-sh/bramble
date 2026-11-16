@@ -1,14 +1,11 @@
 Nouveautés de cette version :
 
-- Les clés de passe enregistrées dans Bramble fonctionnent désormais sur les sites qui les utilisent pour protéger vos données (iOS 18 ou version ultérieure).
-- L’importation depuis Proton Pass récupère désormais vos clés de passe, vos fichiers et tous vos sites web, et l’importation depuis 1Password récupère vos fichiers. L’aperçu de l’importation compte les pièces jointes avant de commencer.
-- Créer des alias e-mail avec Fastmail Masked Email.
-- Les sites web d’un identifiant sont désormais regroupés sous une seule étiquette.
-- Les identifiants dont le site web a été enregistré sans « https:// », comme nas.local:5000, sont désormais remplis automatiquement et retrouvent leurs clés de passe.
-- L’importation depuis Apple Passwords conserve les dates de chaque élément, et l’écran de transfert mentionne désormais Bramble.
-- La création de plusieurs clés de passe à la suite n’en perd plus aucune, et une clé de passe n’est proposée que sur son propre site.
-- L’enregistrement ne se bloque plus lorsque votre connexion est instable, par exemple avec un VPN en mauvais état. Si un enregistrement prend trop de temps, l’application vous le signale.
-- Un fichier que vous étiez en train de joindre lorsque l’application s’est fermée ne subsiste plus dans vos sauvegardes.
-- Améliorations de la sécurité de la synchronisation.
+- La recherche examine aussi les notes et affiche d’abord les correspondances de nom.
+- Après le verrouillage de l’application, le déverrouillage vous ramène à l’écran où vous étiez, avec votre recherche et votre position dans la liste.
+- La liste du coffre mémorise l’ordre de tri que vous avez choisi.
+- Le journal de synchronisation indique quand chaque ligne s’est produite et quel appareil elle concerne. Paramètres > Synchronisation comprend un bouton Synchroniser.
+- L’application vous informe lorsqu’une nouvelle version est disponible.
+- La synchronisation démarre dès que le premier appareil que vous invitez se connecte.
+- Les appareils se connectent de façon plus fiable pour la synchronisation.
 
 Aucun compte, aucun cloud. Tout reste sur vos appareils.

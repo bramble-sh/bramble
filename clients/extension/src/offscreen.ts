@@ -43,9 +43,22 @@ const chromeBridge: SyncBridge = {
 	blobArrived: () => {
 		void api.runtime.sendMessage({ type: "BLOB_ARRIVED" }).catch(() => {});
 	},
-	linkSend: (frame) => askBackground("LINK_SYNC_SEND", { frame }),
+	linkSend: (frame, room) => askBackground("LINK_SYNC_SEND", { frame, room }),
 	linkBlobSend: (stream, frame) => askBackground("LINK_BLOB_SEND", { stream, frame }),
 	linkBlobUp: () => askBackground("LINK_BLOB_UP"),
+	linkAuthenticated: (vaultId) => {
+		void api.runtime.sendMessage({ type: "DESKTOP_LINK_PROVEN", vaultId }).catch(() => {});
+	},
+	linkDesktopSyncKey: async () => {
+		try {
+			const res = (await api.runtime.sendMessage({ type: "DESKTOP_LINK_SYNC_KEY" })) as
+				| { ok?: boolean; data?: string | null }
+				| undefined;
+			return res?.ok === true ? (res.data ?? null) : null;
+		} catch {
+			return null;
+		}
+	},
 };
 
 /** A yes/no from the background, which owns the native port. No answer (a worker that is gone)

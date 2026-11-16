@@ -111,10 +111,14 @@ export interface SyncBridge {
 	/** Frames to the desktop app over the native link, which the background owns. Bridged rather
 	 * than messaged, because on Firefox this host IS the background, and a page's own
 	 * runtime.sendMessage never reaches its own listeners. False when the link is down. */
-	linkSend?: (frame: string) => Promise<boolean>;
+	linkSend?: (frame: string, room?: string) => Promise<boolean>;
 	linkBlobSend?: (stream: number, frame: string) => Promise<boolean>;
 	/** Whether a link is up to an app that speaks files. */
 	linkBlobUp?: () => Promise<boolean>;
+	/** The linked desktop app's sync device key, or null when unknown. */
+	linkDesktopSyncKey?: () => Promise<string | null>;
+	/** The desktop app passed the roster check over the link while syncing this vault. */
+	linkAuthenticated?: (vaultId: string) => void;
 }
 
 export interface HostResponse {
@@ -143,6 +147,9 @@ const unregisteredBridge: SyncBridge = {
 
 // The single live enrollment / sync session for this host context.
 let enrollSession: MeshSession | null = null;
+/** How long relay sync waits to learn the desktop's key before starting without it. */
+const DESKTOP_KEY_WAIT_MS = 2000;
+
 let syncSession: MeshSession | null = null;
 /**
  * The second sync session, over the native link to the desktop app on this machine.
@@ -234,16 +241,27 @@ async function startSyncSessions(opts: RosterSyncMsg, bridge: SyncBridge): Promi
 		fetchLocalRoster: () => bridge.fetchLocalRoster(opts.vaultId),
 		pushRemoteRoster: (json: string) => bridge.pushRemoteRoster(opts.vaultId, json),
 	};
-	syncSession = await startRosterSync(common);
+	// The desktop app on this machine syncs over the link only, never the relay.
+	let desktopKey = await Promise.race([
+		bridge.linkDesktopSyncKey?.().catch(() => null) ?? Promise.resolve(null),
+		new Promise<null>((r) => setTimeout(() => r(null), DESKTOP_KEY_WAIT_MS)),
+	]);
+	const skipPeer = (pub: string) => pub === desktopKey;
+	syncSession = await startRosterSync({ ...common, skipPeer });
 	// The desktop app on this machine, over the pipe it already has. Started second so
 	// a relay failure does not cost the local peer, which is the one that works offline.
 	linkSyncSession = await startRosterSync({
 		...common,
+		onAuthenticated: (pub: string) => {
+			desktopKey = pub;
+			bridge.linkAuthenticated?.(opts.vaultId);
+		},
 		peerSource: makeLinkPeerSource({
 			send: (frame) => bridge.linkSend?.(frame) ?? Promise.resolve(false),
-			subscribe: (onFrame) => {
-				linkFrameSinks.add(onFrame);
-				return () => linkFrameSinks.delete(onFrame);
+			subscribe: (onFrame) => subscribeLinkFrames("sync", onFrame),
+			subscribeDown: (onDown) => {
+				linkDownSinks.add(onDown);
+				return () => linkDownSinks.delete(onDown);
 			},
 		}),
 	});
@@ -256,6 +274,7 @@ async function startSyncSessions(opts: RosterSyncMsg, bridge: SyncBridge): Promi
 		// Direct connections need WebRTC, which no Firefox extension context has. There the
 		// desktop app's link is the only path a file has to this browser.
 		relay: typeof RTCPeerConnection !== "undefined",
+		skipPeer,
 		localSources: [
 			blobLinkDialer({
 				up: () => bridge.linkBlobUp?.() ?? Promise.resolve(false),
@@ -273,9 +292,23 @@ async function startSyncSessions(opts: RosterSyncMsg, bridge: SyncBridge): Promi
 }
 
 /** Sinks for frames the desktop app sends, delivered here by the background. */
-const linkFrameSinks = new Set<(frame: string) => void>();
+const linkFrameSinks = new Map<string, Set<(frame: string) => void>>();
+
+/** Receive the desktop's link frames for one room. Returns an unsubscribe. */
+function subscribeLinkFrames(room: string, onFrame: (frame: string) => void): () => void {
+	const sinks = linkFrameSinks.get(room) ?? new Set();
+	linkFrameSinks.set(room, sinks);
+	sinks.add(onFrame);
+	return () => sinks.delete(onFrame);
+}
 /** The same for its file frames and pokes. */
-const linkBlobSinks = new Set<{ frame(stream: number, frame: string): void; poke(): void }>();
+const linkBlobSinks = new Set<{
+	frame(stream: number, frame: string): void;
+	poke(): void;
+	down(): void;
+}>();
+/** Who to tell when the background says the link has gone. */
+const linkDownSinks = new Set<() => void>();
 
 /**
  * The pairing approval the host is waiting on, if any. It lives here rather than in the popup
@@ -303,7 +336,7 @@ function settleApproval(approved: boolean): void {
  * unlike the panel log, which the popup drops when it closes during cross-browser enrollment. */
 function reportSyncStatus(status: string): void {
 	console.log("[bramble:sync]", status);
-	const payload: SyncStatusMsg = { status };
+	const payload: SyncStatusMsg = { status, at: Date.now() };
 	void api.runtime.sendMessage({ type: "SYNC_STATUS", payload }).catch(() => {});
 }
 
@@ -330,6 +363,8 @@ interface LinkWasm {
 	handshake_close(sessionId: number): void;
 	handshake_encrypt(sessionId: number, plaintext: string): string;
 	handshake_decrypt(sessionId: number, ciphertextB64: string): string;
+	handshake_link_initiator(privateKeyB64: string): { sessionId: number; message: string };
+	handshake_hash(sessionId: number): string;
 }
 
 type HostWasm = LinkWasm &
@@ -849,9 +884,11 @@ export async function handleHostMessage(type: string, payload: unknown): Promise
 			}
 			case "LINK_SYNC_FRAME": {
 				// A frame the desktop app pushed, relayed in by the background, which owns the port.
-				const frame = (payload as { frame?: unknown } | null)?.frame;
+				const { frame, room } = (payload ?? {}) as { frame?: unknown; room?: unknown };
 				if (typeof frame !== "string") throw new Error("LINK_SYNC_FRAME requires a frame");
-				for (const sink of linkFrameSinks) sink(frame);
+				for (const sink of linkFrameSinks.get(typeof room === "string" ? room : "sync") ?? []) {
+					sink(frame);
+				}
 				return { ok: true };
 			}
 			case "LINK_BLOB_FRAME": {
@@ -864,6 +901,10 @@ export async function handleHostMessage(type: string, payload: unknown): Promise
 			}
 			case "LINK_BLOB_POKE":
 				for (const sink of linkBlobSinks) sink.poke();
+				return { ok: true };
+			case "LINK_DOWN":
+				for (const sink of linkDownSinks) sink();
+				for (const sink of linkBlobSinks) sink.down();
 				return { ok: true };
 			case "SYNC_ROSTER_SYNC": {
 				const opts = RosterSyncMsgSchema.parse(payload);
@@ -898,6 +939,18 @@ export async function handleHostMessage(type: string, payload: unknown): Promise
 				const w = await getWasm();
 				const { sessionId, message } = payload as { sessionId: number; message: string };
 				return { ok: true, data: w.handshake_read(sessionId, message) };
+			}
+			case "LINK_PAIR_INITIATOR": {
+				// Linking with the desktop app by emoji: plain XX, no code. See background/desktop-link.ts.
+				const w = await getWasm();
+				const { privateKey } = payload as { privateKey: string };
+				return { ok: true, data: w.handshake_link_initiator(privateKey) };
+			}
+			case "LINK_HANDSHAKE_HASH": {
+				// What the link emoji derive from; the desktop app derives the same from its side.
+				const w = await getWasm();
+				const { sessionId } = payload as { sessionId: number };
+				return { ok: true, data: w.handshake_hash(sessionId) };
 			}
 			case "LINK_REMOTE_STATIC": {
 				// The desktop app's static key, learned during pairing so later KK handshakes
@@ -961,10 +1014,21 @@ export async function handleHostMessage(type: string, payload: unknown): Promise
 				const inviteVaultId = role === "inviter" ? (opts as EnrollInviteMsg).vaultId : undefined;
 				enrollSession?.stop();
 				settleApproval(false); // a new enroll supersedes any prompt left over from the last one
+				// Joiner of an invite the desktop app handed over the link: the copy stays on the link.
+				const viaLink = role === "joiner" && (opts as { viaLink?: boolean }).viaLink === true;
 				enrollSession = await startEnroll(role, {
 					...opts,
 					wasm: w,
 					report: reportSyncStatus,
+					peerSource: viaLink
+						? makeLinkPeerSource(
+								{
+									send: (frame) => bridge.linkSend?.(frame, "enroll") ?? Promise.resolve(false),
+									subscribe: (onFrame) => subscribeLinkFrames("enroll", onFrame),
+								},
+								{ eager: true },
+							)
+						: undefined,
 					// Inviter: park the transfer on the user's answer. The joiner is connected and
 					// authenticated at this point, but nothing has been sent, and nothing will be
 					// unless this resolves true. See docs/p2p-sync.md "Pairing code".
@@ -978,7 +1042,10 @@ export async function handleHostMessage(type: string, payload: unknown): Promise
 								label,
 							});
 						}),
-					onSas: (sas) => broadcastSyncEvent({ kind: "sas", sas: sas.digits, sasEmoji: sas.emoji }),
+					// Over the link both screens already compared emoji; there is nothing to show here.
+					onSas: viaLink
+						? undefined
+						: (sas) => broadcastSyncEvent({ kind: "sas", sas: sas.digits, sasEmoji: sas.emoji }),
 					// The window closed. Refuse any prompt still parked here (nothing can be sent
 					// after this) and tell the UI, which may have lost its own countdown when the
 					// popup closed and reopened.

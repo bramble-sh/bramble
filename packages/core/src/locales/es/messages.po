@@ -28,6 +28,11 @@ msgstr "{0, plural, one {# archivo adjunto del archivo de respaldo estaba dañad
 msgid "{0, plural, one {# attachment restored with it.} other {# attachments restored with it.}}"
 msgstr "{0, plural, one {# archivo adjunto restaurado con él.} other {# archivos adjuntos restaurados con él.}}"
 
+#. placeholder {0}: leftBehind.unreadableTargets
+#: packages/core/src/app/screens/Settings/components/CombineResult.tsx
+msgid "{0, plural, one {# backup target couldn't be opened, so it wasn't brought over.} other {# backup targets couldn't be opened, so they weren't brought over.}}"
+msgstr "{0, plural, one {No se pudo abrir # destino de copia de seguridad, así que no se transfirió.} other {No se pudieron abrir # destinos de copia de seguridad, así que no se transfirieron.}}"
+
 #. placeholder {0}: unsigned.length
 #: packages/core/src/app/screens/Settings/components/SyncConnectSection.tsx
 msgid "{0, plural, one {# device has not signed its roster entry yet. Each device signs itself the next time Bramble opens on it; until then the others cannot tell it from an impostor.} other {# devices have not signed their roster entries yet. Each device signs itself the next time Bramble opens on it; until then the others cannot tell them from an impostor.}}"
@@ -74,10 +79,20 @@ msgstr "{0, plural, one {Este respaldo tiene # archivo adjunto, que Bramble aún
 msgid "{0} · added {1}"
 msgstr "{0} · añadido {1}"
 
+#. placeholder {0}: entry.name
+#: packages/core/src/app/routes/EntryDetailRoute.tsx
+msgid "{0} (copy)"
+msgstr "{0} (copia)"
+
 #. placeholder {0}: d.domain
 #: packages/core/src/app/screens/Settings/components/AliasSection.tsx
 msgid "{0} (your domain)"
 msgstr "{0} (su dominio)"
+
+#. placeholder {0}: combined.quarantined
+#: packages/core/src/app/screens/Settings/components/CombineResult.tsx
+#~ msgid "{0} damaged entries stayed in the old vault."
+#~ msgstr "{0} entradas dañadas permanecieron en la bóveda antigua."
 
 #. placeholder {0}: heldBack.length
 #: packages/core/src/app/screens/Import/ImportShell.tsx
@@ -104,6 +119,22 @@ msgstr "{attachments, plural, one {# archivo adjunto} other {# archivos adjuntos
 msgid "{attachments, plural, one {Attachments aren't transferred: # file on these entries won't be in the export.} other {Attachments aren't transferred: # files on these entries won't be in the export.}}"
 msgstr "{attachments, plural, one {Los archivos adjuntos no se transfieren: # archivo de estas entradas no se incluirá en la exportación.} other {Los archivos adjuntos no se transfieren: # archivos de estas entradas no se incluirán en la exportación.}}"
 
+#: packages/core/src/app/screens/Settings/components/TwoVaultsPrompt.tsx
+msgid "{browserName} also syncs with {others}. Combining moves only this browser; they stay on {browserName}."
+msgstr "{browserName} también se sincroniza con {others}. Al combinar, solo se mueve este navegador; los demás permanecen en {browserName}."
+
+#: packages/core/src/app/screens/Settings/components/TwoVaultsPrompt.tsx
+#~ msgid "{browserName} is kept, locked, as \"{browserName} (before linking)\" until you delete it."
+#~ msgstr "{browserName} se conserva, bloqueado, como «{browserName} (antes de vincular)» hasta que usted lo elimine."
+
+#: packages/core/src/app/screens/Settings/components/TwoVaultsPrompt.tsx
+#~ msgid "{browserName} stays, as \"{browserName} (before linking)\", until you delete it."
+#~ msgstr "{browserName} permanece como \"{browserName} (antes de vincular)\" hasta que lo elimine."
+
+#: packages/core/src/app/screens/Settings/components/CombineResult.tsx
+msgid "{conflicted, plural, one {# entry has a sync conflict. Only the version shown came across.} other {# entries have a sync conflict. Only the version shown came across.}}"
+msgstr "{conflicted, plural, one {# entrada tiene un conflicto de sincronización. Solo se transfirió la versión mostrada.} other {# entradas tienen un conflicto de sincronización. Solo se transfirió la versión mostrada.}}"
+
 #: packages/core/src/app/screens/Settings/components/KdbxExportDialog.tsx
 msgid "{conflicted, plural, one {# entry has a sync conflict. Only the version you see is exported.} other {# entries have a sync conflict. Only the version you see is exported.}}"
 msgstr "{conflicted, plural, one {# entrada tiene un conflicto de sincronización. Solo se exporta la versión que ve.} other {# entradas tienen un conflicto de sincronización. Solo se exporta la versión que ve.}}"
@@ -111,6 +142,10 @@ msgstr "{conflicted, plural, one {# entrada tiene un conflicto de sincronizació
 #: packages/core/src/app/bulk-actions/export.tsx
 msgid "{conflicted, plural, one {# of these entries has a sync conflict. Only the version you see is exported.} other {# of these entries have a sync conflict. Only the version you see is exported.}}"
 msgstr "{conflicted, plural, one {# de estas entradas tiene un conflicto de sincronización. Solo se exporta la versión que ve.} other {# de estas entradas tienen un conflicto de sincronización. Solo se exporta la versión que ve.}}"
+
+#: packages/core/src/app/screens/Settings/components/CombineResult.tsx
+#~ msgid "{conflicted} entries have a sync conflict. Only the version shown came across."
+#~ msgstr "{conflicted} entradas tienen un conflicto de sincronización. Solo se ha transferido la versión mostrada."
 
 #: packages/core/src/app/screens/VaultHome/SelectionBar.tsx
 msgid "{count, plural, one {# selected} other {# selected}}"
@@ -131,6 +166,30 @@ msgstr "{from} lo tiene. Llegará a continuación."
 #: packages/core/src/app/entry-modes/attachments.tsx
 msgid "{from} has it. Trying again shortly."
 msgstr "{from} lo tiene. Se reintentará en breve."
+
+#: packages/core/src/app/screens/Settings/components/CombineResult.tsx
+msgid "{held, plural, one {# entry looked like one the desktop's vault already has, so it stayed in the old vault.} other {# entries looked like ones the desktop's vault already has, so they stayed in the old vault.}}"
+msgstr "{held, plural, one {# entrada se parecía a una que ya estaba en la bóveda del escritorio, por lo que permaneció en la bóveda antigua.} other {# entradas se parecían a otras que ya estaban en la bóveda del escritorio, por lo que permanecieron en la bóveda antigua.}}"
+
+#: packages/core/src/app/screens/Settings/components/CombineResult.tsx
+#~ msgid "{held, plural, one {# entry looks like one the desktop's vault already has, so it wasn't copied. It goes if you delete the old vault.} other {# entries look like ones the desktop's vault already has, so they weren't copied. They go if you delete the old vault.}}"
+#~ msgstr "{held, plural, one {# entrada se parece a una que ya está en la bóveda del escritorio, por lo que no se copió. Se eliminará si se borra la bóveda antigua.} other {# entradas se parecen a otras que ya están en la bóveda del escritorio, por lo que no se copiaron. Se eliminarán si se borra la bóveda antigua.}}"
+
+#: packages/core/src/app/screens/Settings/components/CombineResult.tsx
+msgid "{held, plural, one {# entry looks like one the desktop's vault already has, so it wasn't copied.} other {# entries look like ones the desktop's vault already has, so they weren't copied.}}"
+msgstr "{held, plural, one {# entrada parece estar ya en la bóveda de la aplicación de escritorio, por lo que no se copió.} other {# entradas parecen estar ya en la bóveda de la aplicación de escritorio, por lo que no se copiaron.}}"
+
+#: packages/core/src/app/screens/Settings/components/CombineResult.tsx
+#~ msgid "{held} entries look like ones the desktop's vault already has, so they weren't copied. They go if you delete the old vault."
+#~ msgstr "{held} entradas parecen estar ya en la caja fuerte de la aplicación de escritorio, por lo que no se copiaron. Se eliminarán al eliminar la caja fuerte antigua."
+
+#: packages/core/src/app/screens/Settings/components/CombineResult.tsx
+#~ msgid "{held} entries look like ones the desktop's vault already has. Copy them before the old vault goes?"
+#~ msgstr "Las {held} entradas se parecen a las que ya tiene la bóveda del escritorio. ¿Desea copiarlas antes de que se elimine la bóveda antigua?"
+
+#: packages/core/src/app/screens/Settings/components/CombineResult.tsx
+#~ msgid "{held} entries looked like ones the desktop's vault already has, so they stayed in the old vault."
+#~ msgstr "{held} entradas eran similares a las que ya tiene la bóveda de la aplicación de escritorio, por lo que permanecieron en la bóveda anterior."
 
 #: packages/core/src/app/screens/VaultHome/SelectionBar.tsx
 msgid "{hiddenCount, plural, one {# hidden by the current filter} other {# hidden by the current filter}}"
@@ -157,6 +216,18 @@ msgstr "{moving, plural, one {¿Archivar # entrada?} other {¿Archivar # entrada
 msgid "{moving, plural, one {Restore # entry?} other {Restore # entries?}}"
 msgstr "{moving, plural, one {¿Restaurar # entrada?} other {¿Restaurar # entradas?}}"
 
+#: packages/core/src/app/hooks/useVaultTitle.tsx
+#~ msgid "{name} (before linking)"
+#~ msgstr "{name} (antes de vincular)"
+
+#: packages/core/src/app/screens/Settings/components/HiddenVaultRow.tsx
+#~ msgid "{name} changed after the copy, so it's listed again."
+#~ msgstr "{name} cambió tras la copia, por lo que vuelve a aparecer en la lista."
+
+#: packages/core/src/app/screens/Settings/components/HiddenVaultRow.tsx
+#~ msgid "{name} is hidden on this browser. Its entries were copied into the desktop's vault."
+#~ msgstr "{name} está oculto en este navegador. Sus entradas se copiaron en la caja fuerte del escritorio."
+
 #: packages/core/src/app/bulk-actions/delete.tsx
 msgid "{passkeys, plural, one {# passkey is stored on these entries and is deleted with them.} other {# passkeys are stored on these entries and are deleted with them.}}"
 msgstr "{passkeys, plural, one {# passkey está almacenada en estas entradas y se elimina con ellas.} other {# passkeys están almacenadas en estas entradas y se eliminan con ellas.}}"
@@ -168,6 +239,14 @@ msgstr "{passkeys, plural, one {# llave de acceso} other {# llaves de acceso}}"
 #: packages/core/src/app/screens/Import/ImportShell.tsx
 msgid "{passwordDiffers} share a site and username with an entry you already have, but with a different password. They will be added as new entries."
 msgstr "{passwordDiffers} comparten el sitio y el nombre de usuario con una entrada que ya tiene, pero con una contraseña diferente. Se añadirán como nuevas entradas."
+
+#: packages/core/src/app/screens/Settings/components/CombineResult.tsx
+msgid "{quarantined, plural, one {# damaged entry stayed in the old vault.} other {# damaged entries stayed in the old vault.}}"
+msgstr "{quarantined, plural, one {# entrada dañada permaneció en la bóveda antigua.} other {# entradas dañadas permanecieron en la bóveda antigua.}}"
+
+#: packages/core/src/app/screens/Settings/components/CombineResult.tsx
+#~ msgid "{quarantined} damaged entries stayed in the old vault."
+#~ msgstr "{quarantined} entradas dañadas permanecieron en la caja fuerte antigua."
 
 #: packages/core/src/app/entry-modes/login.tsx
 msgid "{remaining}s left"
@@ -184,6 +263,18 @@ msgstr "{skippedFiles, plural, one {# archivo adjunto de este archivo se omite: 
 #: packages/core/src/app/screens/Import/ImportShell.tsx
 msgid "{toExisting, plural, one {# attachment will be added to an entry you already have.} other {# attachments will be added to entries you already have.}}"
 msgstr "{toExisting, plural, one {# archivo adjunto se añadirá a una entrada que usted ya tiene.} other {# archivos adjuntos se añadirán a las entradas que usted ya tiene.}}"
+
+#: packages/core/src/app/screens/Settings/components/CombineResult.tsx
+#~ msgid "{uncarried, plural, one {# file didn't copy. It is still in the old vault, which is kept until you delete it.} other {# files didn't copy. They are still in the old vault, which is kept until you delete it.}}"
+#~ msgstr "{uncarried, plural, one {# archivo no se copió. Sigue en la bóveda antigua, que se conserva hasta que se elimine.} other {# archivos no se copiaron. Siguen en la bóveda antigua, que se conserva hasta que se elimine.}}"
+
+#: packages/core/src/app/screens/Settings/components/CombineResult.tsx
+msgid "{uncarried, plural, one {# file didn't copy. It is still in the old vault.} other {# files didn't copy. They are still in the old vault.}}"
+msgstr "{uncarried, plural, one {# archivo no se copió. Sigue en la bóveda anterior.} other {# archivos no se copiaron. Siguen en la bóveda anterior.}}"
+
+#: packages/core/src/app/screens/Settings/components/CombineResult.tsx
+#~ msgid "{uncarried} files didn't copy. They are still in the old vault, which is kept until you delete it."
+#~ msgstr "{uncarried} archivos no se copiaron. Aún están en la bóveda anterior, que se conserva hasta que usted la elimine."
 
 #: packages/core/src/app/screens/Import/ImportShell.tsx
 #~ msgid "{withNew, plural, one {# attachment goes with them.} other {# attachments go with them.}}"
@@ -345,6 +436,14 @@ msgstr "Etiqueta {added} añadida. {0} etiquetas."
 msgid "Added when you create a passkey on a site with Bramble. Remove to delete."
 msgstr "Añadida al crear una clave de acceso en un sitio con Bramble. Elimine para borrarla."
 
+#: packages/core/src/app/screens/Settings/components/SyncConnectSection.tsx
+msgid "Adding a device needs a master password"
+msgstr "Añadir un dispositivo requiere una contraseña maestra"
+
+#: packages/core/src/app/screens/Settings/components/TwoVaultsPrompt.tsx
+msgid "Adds {desktopName} next to {browserName}. Switch between them from the vault menu."
+msgstr "Añade {desktopName} junto a {browserName}. Alterne entre ambas desde el menú de la bóveda."
+
 #: packages/core/src/app/screens/Settings/components/AliasSection.tsx
 msgid "Addy needs a domain before it can create an alias."
 msgstr "Addy necesita un dominio antes de poder crear un alias."
@@ -390,6 +489,7 @@ msgid "Allow again"
 msgstr "Permitir de nuevo"
 
 #: packages/core/src/app/screens/Settings/components/DesktopLinkSection.tsx
+#: packages/core/src/app/screens/VaultSetup/components/DesktopLinkCard.tsx
 msgid "Allow and continue"
 msgstr "Permitir y continuar"
 
@@ -399,8 +499,8 @@ msgstr "Permitir código de acceso de respaldo"
 
 #. placeholder {0}: entries.length
 #: packages/core/src/app/screens/Settings/components/DesktopLinkSection.tsx
-msgid "Also copy this vault's {0} entries into it, so everything is in one place. They stay here too; nothing is deleted."
-msgstr "Copie también las {0} entradas de esta caja fuerte en ella, para que todo esté en un mismo lugar. También permanecen aquí; no se elimina nada."
+#~ msgid "Also copy this vault's {0} entries into it, so everything is in one place. They stay here too; nothing is deleted."
+#~ msgstr "Copie también las {0} entradas de esta caja fuerte en ella, para que todo esté en un mismo lugar. También permanecen aquí; no se elimina nada."
 
 #: packages/core/src/app/screens/Settings/components/GeneralSection.tsx
 msgid "Also lock the vault whenever your computer's screen locks, whatever the timeout."
@@ -422,6 +522,10 @@ msgstr "Un punto final que devuelve sus propios servidores ICE en formato JSON. 
 msgid "Anchor"
 msgstr "Ancla"
 
+#: packages/core/src/app/components/EntryRow.tsx
+msgid "Another item uses this password"
+msgstr "Otro elemento usa esta contraseña."
+
 #: packages/core/src/app/screens/Settings/components/AliasSection.tsx
 msgid "API key"
 msgstr "Clave API"
@@ -437,6 +541,14 @@ msgstr "Apariencia"
 #: packages/core/src/app/components/SasDisplay.tsx
 msgid "Apple"
 msgstr "Manzana"
+
+#: packages/core/src/app/screens/Settings/components/BrowserPairingSection.tsx
+msgid "Approve"
+msgstr "Aprobar"
+
+#: packages/core/src/app/screens/Settings/components/BrowserPairingSection.tsx
+msgid "Approve only if your browser shows the same symbols."
+msgstr "Apruebe solo si su navegador muestra los mismos símbolos."
 
 #: packages/core/src/app/bulk-actions/archive.tsx
 #: packages/core/src/app/screens/EntryDetail/EntryDetail.tsx
@@ -667,10 +779,12 @@ msgid "Bramble is up to date."
 msgstr "Bramble está actualizado."
 
 #: packages/core/src/app/screens/Settings/components/DesktopLinkSection.tsx
+#: packages/core/src/app/screens/VaultSetup/components/DesktopLinkCard.tsx
 msgid "Bramble needs that permission to talk to the desktop app."
 msgstr "Bramble necesita ese permiso para comunicarse con la aplicación de escritorio."
 
 #: packages/core/src/app/screens/Settings/components/DesktopLinkSection.tsx
+#: packages/core/src/app/screens/VaultSetup/components/DesktopLinkCard.tsx
 msgid "Bramble needs your permission to talk to the desktop app on this computer. Your browser will ask you to confirm."
 msgstr "Bramble necesita su permiso para comunicarse con la aplicación de escritorio de este equipo. Su navegador le pedirá que lo confirme."
 
@@ -759,8 +873,8 @@ msgid "Cardholder name"
 msgstr "Nombre del titular de la tarjeta"
 
 #: packages/core/src/app/screens/VaultHome/VaultSearchBar.tsx
-msgid "Cards"
-msgstr "Tarjetas"
+#~ msgid "Cards"
+#~ msgstr "Tarjetas"
 
 #: packages/core/src/app/components/SasDisplay.tsx
 msgid "Cat"
@@ -810,6 +924,17 @@ msgstr "Verifique los dígitos; ese no es un número de tarjeta válido."
 msgid "Check the key first, to load the choices this provider needs."
 msgstr "Compruebe primero la clave para cargar las opciones que necesita este proveedor."
 
+#. placeholder {0}: linkPending.label
+#: packages/core/src/app/screens/Settings/components/BrowserPairingSection.tsx
+msgid "Check these match {0}"
+msgstr "Compruebe que estos coinciden con {0}"
+
+#: packages/core/src/app/screens/Settings/components/DesktopLinkSection.tsx
+#: packages/core/src/app/screens/VaultSetup/components/DesktopLinkCard.tsx
+msgid "Check these match your desktop app"
+msgstr "Compruebe que estos coinciden con su aplicación de escritorio"
+
+#: packages/core/src/app/screens/VaultSetup/components/DesktopLinkCard.tsx
 #: packages/core/src/app/screens/VaultSetup/VaultSetup.tsx
 msgid "Check this matches"
 msgstr "Verificar coincidencia"
@@ -857,8 +982,8 @@ msgid "Choose where to store encrypted backups. Bramble only ever uploads cipher
 msgstr "Elija dónde almacenar las copias de seguridad cifradas. Bramble solo carga texto cifrado, por lo que su proveedor no puede leer nada en su bóveda. Añada tantos destinos como desee."
 
 #: packages/core/src/app/screens/VaultSetup/components/SetupHeader.tsx
-msgid "Choose where to store your encrypted vault and pick a master password."
-msgstr "Seleccione dónde almacenar su bóveda cifrada y elija una contraseña maestra."
+#~ msgid "Choose where to store your encrypted vault and pick a master password."
+#~ msgstr "Seleccione dónde almacenar su bóveda cifrada y elija una contraseña maestra."
 
 #: packages/core/src/app/screens/Settings/components/AliasSection.tsx
 msgid "Choose..."
@@ -867,6 +992,10 @@ msgstr "Elegir..."
 #: packages/core/src/app/screens/Settings/components/GeneralSection.tsx
 msgid "Clear after"
 msgstr "Borrar después de"
+
+#: packages/core/src/app/screens/VaultHome/VaultSearchBar.tsx
+msgid "Clear search"
+msgstr "Borrar búsqueda"
 
 #: packages/core/src/app/screens/Settings/components/GeneralSection.tsx
 msgid "Clipboard auto-clear"
@@ -877,6 +1006,7 @@ msgid "Clock"
 msgstr "Reloj"
 
 #: packages/core/src/app/components/ui/modal.tsx
+#: packages/core/src/app/routes/PasskeyVerifyRoute.tsx
 #: packages/core/src/app/screens/Restore/RestoreShell.tsx
 #: packages/core/src/app/screens/Settings/components/BackupSection.tsx
 #: packages/core/src/app/screens/Settings/components/SyncConnectSection.tsx
@@ -895,6 +1025,11 @@ msgstr "Nube"
 msgid "Cloud backups"
 msgstr "Copias de seguridad en la nube"
 
+#: packages/core/src/app/screens/Settings/components/DesktopLinkSection.tsx
+#: packages/core/src/app/screens/VaultSetup/components/DesktopLinkCard.tsx
+msgid "Code from the desktop app"
+msgstr "Código de la aplicación de escritorio"
+
 #: packages/core/src/app/screens/VaultSetup/components/JoinCard.tsx
 msgid "Code scanned"
 msgstr "Código escaneado"
@@ -902,6 +1037,10 @@ msgstr "Código escaneado"
 #: packages/core/src/app/screens/Settings/components/SyncConnectSection.tsx
 msgid "Codes are short-lived on purpose. Generate a new one when your other device is ready to scan it."
 msgstr "Los códigos caducan rápidamente a propósito. Genere uno nuevo cuando su otro dispositivo esté listo para escanearlo."
+
+#: packages/core/src/app/screens/Settings/components/TwoVaultsPrompt.tsx
+msgid "Combine into one"
+msgstr "Combinar en una sola"
 
 #: packages/core/src/app/screens/Settings/components/BackupSection.tsx
 msgid "Coming soon"
@@ -924,6 +1063,10 @@ msgstr "Confirmar"
 msgid "Confirm disconnect"
 msgstr "Confirmar desconexión"
 
+#: packages/core/src/app/screens/Settings/components/DesktopLinkSection.tsx
+msgid "Confirm here and approve in the desktop app, only if both show the same symbols."
+msgstr "Confirme aquí y apruebe en la aplicación de escritorio solo si ambos muestran los mismos símbolos."
+
 #: packages/core/src/app/routes/PasskeyVerifyRoute.tsx
 #: packages/core/src/app/screens/Settings/components/BrowserPairingSection.tsx
 #: packages/core/src/app/screens/Settings/components/SyncConnectSection.tsx
@@ -941,6 +1084,10 @@ msgstr "Confirmar nueva contraseña"
 #: packages/core/src/app/screens/Settings/components/TapToUnlockSection.tsx
 msgid "Confirm on your device…"
 msgstr "Confirme en su dispositivo…"
+
+#: packages/core/src/app/screens/Settings/components/GeneralSection.tsx
+msgid "Confirm passkeys once per unlock"
+msgstr "Confirmar passkeys una vez por desbloqueo"
 
 #: packages/core/src/app/components/ui/file-password-dialog.tsx
 msgid "Confirm password"
@@ -966,12 +1113,17 @@ msgstr "Confirme su contraseña maestra para restablecer el código de recuperac
 msgid "Confirm your new password"
 msgstr "Confirmar nueva contraseña"
 
+#: packages/core/src/app/routes/PasskeyVerifyRoute.tsx
+msgid "Confirmed. Sign in again on {rp}."
+msgstr "Confirmado. Inicie sesión de nuevo en {rp}."
+
 #: packages/core/src/app/components/EntryRow.tsx
 msgid "Conflict"
 msgstr "Conflicto"
 
 #: packages/core/src/app/screens/Settings/components/BrowserPairingSection.tsx
 #: packages/core/src/app/screens/Settings/components/DesktopLinkSection.tsx
+#: packages/core/src/app/screens/VaultSetup/components/DesktopLinkCard.tsx
 msgid "Connect"
 msgstr "Conectar"
 
@@ -982,6 +1134,10 @@ msgstr "Conectar {name}"
 #: packages/core/src/app/screens/Settings/components/BrowserPairingSection.tsx
 msgid "Connect a browser"
 msgstr "Conectar un navegador"
+
+#: packages/core/src/app/components/AliasGenerator.tsx
+msgid "Connect an alias provider to create addresses here."
+msgstr "Conecte un proveedor de alias para crear direcciones aquí."
 
 #: packages/core/src/app/screens/Settings/components/DesktopLinkSection.tsx
 msgid "Connected"
@@ -1006,6 +1162,10 @@ msgstr "Conectado."
 msgid "Connected. {0} of {1} aliases used."
 msgstr "Conectado. {0} de {1} alias utilizados."
 
+#: packages/core/src/app/screens/Settings/components/BrowserPairingSection.tsx
+msgid "Connecting a browser needs a master password. Turn one on in Settings → Security first."
+msgstr "Conectar un navegador requiere una contraseña maestra. Active primero una en Ajustes → Seguridad."
+
 #: packages/core/src/app/screens/Settings/components/DesktopLinkSection.tsx
 msgid "Connecting continues in a window, which stays open while you switch to the desktop app."
 msgstr "La conexión continúa en una ventana, que permanece abierta mientras cambia a la aplicación de escritorio."
@@ -1028,6 +1188,7 @@ msgid "contents"
 msgstr "Contenidos"
 
 #: packages/core/src/app/screens/Settings/components/BrowserPairingSection.tsx
+#: packages/core/src/app/screens/Settings/components/DesktopLinkSection.tsx
 #: packages/core/src/app/screens/Settings/components/SyncConnectSection.tsx
 msgid "Continue"
 msgstr "Continuar"
@@ -1050,6 +1211,11 @@ msgstr "Copiado"
 msgid "Copied {copied}"
 msgstr "Copiado {copied}"
 
+#: packages/core/src/app/screens/Settings/components/TwoVaultsPrompt.tsx
+#~ msgid "Copies {browserName}'s entries and files into {desktopName}. Exact duplicates are skipped; near-duplicates are held for you to review."
+#~ msgstr "Copia las entradas y archivos de {browserName} en {desktopName}. Se omiten los duplicados exactos; los duplicados aproximados se retienen para que usted los revise."
+
+#: packages/core/src/app/components/AliasGenerator.tsx
 #: packages/core/src/app/components/EntryRow.tsx
 #: packages/core/src/app/components/PasswordGenerator.tsx
 #: packages/core/src/app/components/RecoveryCodeDisplay.tsx
@@ -1070,19 +1236,39 @@ msgstr "Copiar {0}"
 msgid "Copy address"
 msgstr "Copiar dirección"
 
+#: packages/core/src/app/screens/Settings/components/SyncConnectSection.tsx
+msgid "Copy log"
+msgstr "Copiar registro"
+
 #: packages/core/src/app/entry-modes/login.tsx
 msgid "Copy previous password"
 msgstr "Copiar contraseña anterior"
+
+#: packages/core/src/app/screens/Settings/components/CombineResult.tsx
+msgid "Copy them anyway"
+msgstr "Copiar de todos modos"
 
 #: packages/core/src/app/entry-modes/login.tsx
 msgid "Copy verification code"
 msgstr "Copiar código de verificación"
 
+#: packages/core/src/app/screens/Settings/components/DesktopLinkSection.tsx
+msgid "Copying into the desktop's vault…"
+msgstr "Copiando en la caja fuerte del escritorio…"
+
+#: packages/core/src/app/screens/VaultSetup/components/DesktopLinkCard.tsx
+msgid "Copying your desktop app's vault…"
+msgstr "Copiando la bóveda de su aplicación de escritorio…"
+
 #: packages/core/src/app/components/SasDisplay.tsx
 msgid "Corn"
 msgstr "Maíz"
 
-#: packages/core/src/app/screens/Settings/components/DesktopLinkSection.tsx
+#: packages/core/src/app/hooks/useDesktopLink.tsx
+msgid "Could not reach the desktop app."
+msgstr "No se pudo conectar con la aplicación de escritorio."
+
+#: packages/core/src/app/hooks/useDesktopLink.tsx
 msgid "Could not sync with the desktop app."
 msgstr "No se pudo sincronizar con la aplicación de escritorio."
 
@@ -1156,6 +1342,10 @@ msgstr "No se pudo escribir en la bóveda."
 #: packages/core/src/app/screens/VaultSetup/components/SetupHeader.tsx
 msgid "Create a new vault alongside your existing ones, with its own master password."
 msgstr "Cree una nueva caja fuerte junto a las existentes, con su propia contraseña maestra."
+
+#: packages/core/src/app/components/AliasGenerator.tsx
+msgid "Create alias"
+msgstr "Crear alias"
 
 #: packages/core/src/app/screens/Settings/components/BackupSection.tsx
 msgid "Create an access key with read and write access to a bucket, then paste it below. For the bucket you can paste its full URL (https://host/bucket)."
@@ -1233,6 +1423,10 @@ msgstr "Diariamente"
 msgid "Dark"
 msgstr "Oscuro"
 
+#: packages/core/src/app/screens/Settings/components/GeneralSection.tsx
+msgid "Default password manager"
+msgstr "Gestor de contraseñas predeterminado"
+
 #: packages/core/src/app/bulk-actions/delete.tsx
 #: packages/core/src/app/components/EntryRow.tsx
 #: packages/core/src/app/screens/EntryDetail/EntryDetail.tsx
@@ -1246,6 +1440,14 @@ msgstr "Eliminar entrada"
 #: packages/core/src/app/screens/EntryDetail/ConflictBanner.tsx
 msgid "Delete it"
 msgstr "Eliminarla"
+
+#: packages/core/src/app/screens/Settings/components/CombineResult.tsx
+#~ msgid "Delete old vault"
+#~ msgstr "Eliminar la caja fuerte antigua"
+
+#: packages/core/src/app/screens/Settings/components/CombineResult.tsx
+#~ msgid "Delete the old vault?"
+#~ msgstr "¿Eliminar la caja fuerte antigua?"
 
 #: packages/core/src/app/screens/EntryDetail/EntryDetail.tsx
 msgid "Delete this entry permanently?"
@@ -1279,8 +1481,8 @@ msgid "Desktop app"
 msgstr "Aplicación de escritorio"
 
 #: packages/core/src/app/screens/Settings/components/DesktopLinkSection.tsx
-msgid "Desktop vault"
-msgstr "Bóveda del escritorio"
+#~ msgid "Desktop vault"
+#~ msgstr "Bóveda del escritorio"
 
 #: packages/core/src/app/entry-modes/login.tsx
 msgid "Details"
@@ -1325,7 +1527,13 @@ msgstr "Desconectar"
 msgid "Disconnect this browser"
 msgstr "Desconectar este navegador"
 
+#: packages/core/src/hooks/useVault.tsx
+msgid "Disconnect this device from sync before turning off the master password."
+msgstr "Desconecte este dispositivo de la sincronización antes de desactivar la contraseña maestra."
+
+#: packages/core/src/app/components/DefaultManagerCard.tsx
 #: packages/core/src/app/components/ReviewNudgeCard.tsx
+#: packages/core/src/app/components/UpdateCard.tsx
 msgid "Dismiss"
 msgstr "Descartar"
 
@@ -1335,6 +1543,7 @@ msgstr "Perro"
 
 #: packages/core/src/app/screens/Import/ImportShell.tsx
 #: packages/core/src/app/screens/Restore/RestoreShell.tsx
+#: packages/core/src/app/screens/Settings/components/CombineResult.tsx
 #: packages/core/src/app/screens/Settings/components/RecoveryCodeSection.tsx
 msgid "Done"
 msgstr "Hecho"
@@ -1388,6 +1597,14 @@ msgstr "Descarga y reinicia Bramble. Su bóveda no se modifica."
 msgid "DuckDuckGo has no API key page. Open the Autofill tab, then your browser's developer tools, click Generate Private Duck Address, and copy the token that follows authorization: Bearer in the Network tab."
 msgstr "DuckDuckGo no tiene una página de clave API. Abra la pestaña Autocompletar, luego las herramientas de desarrollo de su navegador, haga clic en Generate Private Duck Address y copie el token que sigue a authorization: Bearer en la pestaña Red."
 
+#: packages/core/src/app/screens/EntryDetail/EntryDetail.tsx
+msgid "Duplicate"
+msgstr "Duplicar"
+
+#: packages/core/src/app/screens/EntryDetail/EntryDetail.tsx
+msgid "Duplicate entry"
+msgstr "Duplicar entrada"
+
 #: packages/core/src/app/components/EntryRow.tsx
 #: packages/core/src/app/screens/EntryDetail/EntryDetail.tsx
 #: packages/core/src/app/screens/Settings/components/BackupSection.tsx
@@ -1405,6 +1622,10 @@ msgstr "Editar entrada"
 #: packages/core/src/app/components/SasDisplay.tsx
 msgid "Elephant"
 msgstr "Elefante"
+
+#: packages/core/src/app/routes/GeneratorRoute.tsx
+msgid "Email alias"
+msgstr "Alias de correo electrónico"
 
 #: packages/core/src/app/screens/Settings/components/AliasSection.tsx
 #~ msgid "Email aliases"
@@ -1433,6 +1654,15 @@ msgstr "Punto final"
 #: packages/core/src/app/screens/Settings/components/MasterPasswordSection.tsx
 msgid "Enter a new password"
 msgstr "Introducir una nueva contraseña"
+
+#. placeholder {0}: link.summary.name
+#: packages/core/src/app/screens/VaultSetup/components/DesktopLinkCard.tsx
+msgid "Enter the master password of {0}, the vault in your desktop app. This browser will use it too."
+msgstr "Introduzca la contraseña maestra de {0}, la bóveda de su aplicación de escritorio. Este navegador también la usará."
+
+#: packages/core/src/app/screens/VaultSetup/components/DesktopLinkCard.tsx
+msgid "Enter the master password of the vault in your desktop app. This browser will use it too."
+msgstr "Introduzca la contraseña maestra de la bóveda de su aplicación de escritorio. Este navegador también la usará."
 
 #: packages/core/src/app/screens/VaultSetup/components/JoinCard.tsx
 msgid "Enter the master password shared with your other device."
@@ -1520,8 +1750,8 @@ msgid "Expires in {0} · keep this window open until pairing finishes"
 msgstr "Caduca en {0} · mantenga esta ventana abierta hasta que finalice el emparejamiento"
 
 #: packages/core/src/app/screens/Settings/components/BrowserPairingSection.tsx
-msgid "Expires in {minutes}:{seconds}. It can only be used once."
-msgstr "Caduca en {minutes}:{seconds}. Solo se puede usar una vez."
+#~ msgid "Expires in {minutes}:{seconds}. It can only be used once."
+#~ msgstr "Caduca en {minutes}:{seconds}. Solo se puede usar una vez."
 
 #: packages/core/src/app/entry-modes/card.tsx
 msgid "expiry"
@@ -1672,6 +1902,10 @@ msgstr "Generar contraseña"
 #: packages/core/src/app/entry-modes/login.tsx
 msgid "Generate strong password"
 msgstr "Generar contraseña segura"
+
+#: packages/core/src/app/layouts/AppLayout.tsx
+msgid "Generator"
+msgstr "Generador"
 
 #: packages/core/src/app/components/ReviewNudgeCard.tsx
 #~ msgid "Getting on with Bramble?"
@@ -1849,8 +2083,12 @@ msgid "Importing…"
 msgstr "Importando..."
 
 #: packages/core/src/app/screens/Settings/components/BrowserPairingSection.tsx
-msgid "In the Bramble extension, open Settings → Sync → Desktop app and enter this code."
-msgstr "En la extensión Bramble, abra Ajustes → Sincronización → Aplicación de escritorio e introduzca este código."
+#~ msgid "In the Bramble extension, open Settings → Sync → Desktop app and enter this code."
+#~ msgstr "En la extensión Bramble, abra Ajustes → Sincronización → Aplicación de escritorio e introduzca este código."
+
+#: packages/core/src/app/screens/Settings/components/BrowserPairingSection.tsx
+msgid "In the Bramble extension, press Link on the first screen, or open Settings → Desktop app. Both screens will then show the same symbols."
+msgstr "En la extensión Bramble, pulse Vincular en la primera pantalla o abra Configuración → Aplicación de escritorio. Ambas pantallas mostrarán entonces los mismos símbolos."
 
 #: packages/core/src/app/components/PasswordGenerator.tsx
 msgid "Include a number"
@@ -1935,6 +2173,10 @@ msgstr "Elementos con archivos adjuntos"
 msgid "Its credentials were entered in another vault, so this one cannot open them. Edit the target and enter them again to back up now."
 msgstr "Sus credenciales se introdujeron en otra caja fuerte, por lo que esta no puede abrirlas. Edite el destino y vuelva a introducirlas para hacer una copia de seguridad ahora."
 
+#: packages/core/src/app/screens/Settings/components/CombineResult.tsx
+#~ msgid "Its entries and files are in the desktop's vault now."
+#~ msgstr "Sus entradas y archivos ya están en la caja fuerte de la aplicación de escritorio."
+
 #: packages/core/src/app/screens/EntryDetail/ConflictBanner.tsx
 msgid "Its password is different from the version shown."
 msgstr "Su contraseña es distinta de la de la versión mostrada."
@@ -1952,6 +2194,10 @@ msgstr "Unirse a la bóveda"
 msgid "KDBX export isn't available here."
 msgstr "La exportación a KDBX no está disponible aquí."
 
+#: packages/core/src/app/screens/Settings/components/DesktopLinkSection.tsx
+#~ msgid "Keep a copy of this vault"
+#~ msgstr "Conservar una copia de esta bóveda"
+
 #: packages/core/src/app/screens/EntryDetail/ConflictBanner.tsx
 msgid "Keep both"
 msgstr "Conservar ambas"
@@ -1964,9 +2210,17 @@ msgstr "Conservar todo"
 msgid "Keep it"
 msgstr "Conservarla"
 
+#: packages/core/src/app/screens/VaultSetup/components/DesktopLinkCard.tsx
+msgid "Keep the desktop app open until this finishes."
+msgstr "Mantenga abierta la aplicación de escritorio hasta que esto termine."
+
 #: packages/core/src/app/screens/VaultSetup/VaultSetup.tsx
 msgid "Keep the invite open on your other device while the vault transfers."
 msgstr "Mantenga la invitación abierta en su otro dispositivo mientras se transfiere la bóveda."
+
+#: packages/core/src/app/screens/Settings/components/TwoVaultsPrompt.tsx
+msgid "Keep them separate"
+msgstr "Mantenerlas separadas"
 
 #: packages/core/src/app/screens/EntryDetail/ConflictBanner.tsx
 msgid "Keep this one"
@@ -2005,8 +2259,12 @@ msgid "Keyboard suggestions"
 msgstr "Sugerencias del teclado"
 
 #: packages/core/src/app/screens/VaultHome/VaultSearchBar.tsx
-msgid "Keys"
-msgstr "Claves"
+#~ msgid "Keys"
+#~ msgstr "Claves"
+
+#: packages/core/src/app/screens/Settings/components/AppearanceSection.tsx
+msgid "Language"
+msgstr "Idioma"
 
 #: packages/core/src/app/screens/Settings/components/BackupSection.tsx
 msgid "Last 10"
@@ -2056,6 +2314,10 @@ msgstr "Dejar una reseña"
 msgid "Leave the credential fields blank to keep the ones you saved."
 msgstr "Deje los campos de credenciales en blanco para conservar los que guardó."
 
+#: packages/core/src/app/screens/Settings/components/CombineResult.tsx
+#~ msgid "Leave them out"
+#~ msgstr "Excluirlas"
+
 #: packages/core/src/app/screens/Settings/components/AliasSection.tsx
 msgid "Leave unset for your account's default domain, or pick one of your own."
 msgstr "Deje sin configurar para usar el dominio predeterminado de su cuenta o elija uno propio."
@@ -2076,6 +2338,24 @@ msgstr "Luz"
 msgid "Light bulb"
 msgstr "Bombilla"
 
+#: packages/core/src/app/screens/Settings/components/DesktopLinkSection.tsx
+#: packages/core/src/app/screens/VaultSetup/components/DesktopLinkBanner.tsx
+#: packages/core/src/app/screens/VaultSetup/components/DesktopLinkCard.tsx
+msgid "Link"
+msgstr "Vincular"
+
+#: packages/core/src/app/screens/Settings/components/DesktopLinkSection.tsx
+#~ msgid "Link again"
+#~ msgstr "Volver a vincular"
+
+#: packages/core/src/app/screens/VaultSetup/components/DesktopLinkBanner.tsx
+msgid "Link it instead of making a new vault."
+msgstr "Vincúlela en lugar de crear una bóveda nueva."
+
+#: packages/core/src/app/screens/VaultSetup/components/SetupHeader.tsx
+msgid "Link your desktop app"
+msgstr "Vincular su aplicación de escritorio"
+
 #. placeholder {0}: formatDate(status.pairedAt)
 #: packages/core/src/app/screens/Settings/components/DesktopLinkSection.tsx
 msgid "Linked {0}"
@@ -2086,8 +2366,16 @@ msgid "Linked to the Bramble desktop app."
 msgstr "Vinculado a la aplicación de escritorio de Bramble."
 
 #: packages/core/src/app/screens/Settings/components/DesktopLinkSection.tsx
-msgid "Linked to this browser, but the app shares a different vault, not this one."
-msgstr "Vinculado a este navegador, pero la aplicación comparte una bóveda diferente, no esta."
+#~ msgid "Linked to this browser, but the app shares a different vault, not this one."
+#~ msgstr "Vinculado a este navegador, pero la aplicación comparte una bóveda diferente, no esta."
+
+#: packages/core/src/app/screens/VaultSetup/components/DesktopLinkCard.tsx
+#~ msgid "Linking continues in a window, which stays open while you switch to the desktop app."
+#~ msgstr "La vinculación continúa en una ventana que permanece abierta mientras usted cambia a la aplicación de escritorio."
+
+#: packages/core/src/app/hooks/useDesktopLink.tsx
+msgid "Linking didn't finish. Link again."
+msgstr "No se completó la vinculación. Vuelva a vincular."
 
 #: packages/core/src/app/components/SasDisplay.tsx
 msgid "Lion"
@@ -2127,12 +2415,20 @@ msgid "Login saved for {0}"
 msgstr "Se ha guardado el inicio de sesión para {0}"
 
 #: packages/core/src/app/screens/VaultHome/VaultSearchBar.tsx
-msgid "Logins"
-msgstr "Credenciales"
+#~ msgid "Logins"
+#~ msgstr "Credenciales"
 
 #: packages/core/src/app/screens/Settings/components/DesktopLinkSection.tsx
 #~ msgid "Look up a site"
 #~ msgstr "Buscar un sitio"
+
+#: packages/core/src/app/components/DefaultManagerCard.tsx
+msgid "Make Bramble your default password manager?"
+msgstr "¿Desea establecer Bramble como su gestor de contraseñas predeterminado?"
+
+#: packages/core/src/app/components/DefaultManagerCard.tsx
+msgid "Make default"
+msgstr "Establecer como predeterminado"
 
 #: packages/core/src/app/routes/PasskeyVerifyRoute.tsx
 #: packages/core/src/app/screens/Auth/Auth.tsx
@@ -2144,6 +2440,7 @@ msgstr "Credenciales"
 #: packages/core/src/app/screens/Settings/components/RecoveryCodeSection.tsx
 #: packages/core/src/app/screens/Settings/components/RotateSecretSection.tsx
 #: packages/core/src/app/screens/Settings/components/SyncConnectSection.tsx
+#: packages/core/src/app/screens/VaultSetup/components/DesktopLinkCard.tsx
 #: packages/core/src/app/screens/VaultSetup/components/JoinCard.tsx
 #: packages/core/src/app/screens/VaultSetup/components/PasswordCard.tsx
 msgid "Master password"
@@ -2185,6 +2482,10 @@ msgstr "Luna"
 msgid "More options"
 msgstr "Más opciones"
 
+#: packages/core/src/app/screens/Settings/components/TwoVaultsPrompt.tsx
+msgid "Moves {browserName}'s entries and files into {desktopName}. Exact duplicates are skipped; near-duplicates are held for you to review."
+msgstr "Mueve las entradas y archivos de {browserName} a {desktopName}. Se omiten los duplicados exactos; los duplicados aproximados se retienen para su revisión."
+
 #: packages/core/src/app/components/SasDisplay.tsx
 msgid "Mushroom"
 msgstr "Seta"
@@ -2212,8 +2513,8 @@ msgid "Name Z-A"
 msgstr "Nombre Z-A"
 
 #: packages/core/src/app/screens/Settings/components/GeneralSection.tsx
-msgid "Never"
-msgstr "Nunca"
+#~ msgid "Never"
+#~ msgstr "Nunca"
 
 #: packages/core/src/app/screens/CreateEntry/EntryForm.tsx
 msgid "New {modeLabel}"
@@ -2326,7 +2627,6 @@ msgstr "Sin respaldo: no se pueden listar los archivos adjuntos de esta caja fue
 #~ msgstr "No se completó: se cerró Bramble antes de que finalizara esta copia de seguridad. Se ejecutará de nuevo la próxima vez que abra Bramble."
 
 #: packages/core/src/app/screens/Settings/components/BackupSection.tsx
-#: packages/core/src/app/screens/Settings/components/DesktopLinkSection.tsx
 msgid "Not now"
 msgstr "Ahora no"
 
@@ -2345,7 +2645,6 @@ msgstr "No se está sincronizando: sus otros dispositivos ya no reconocen este. 
 #: packages/core/src/app/entry-modes/card.tsx
 #: packages/core/src/app/entry-modes/login.tsx
 #: packages/core/src/app/entry-modes/ssh-key.tsx
-#: packages/core/src/app/screens/VaultHome/VaultSearchBar.tsx
 msgid "Notes"
 msgstr "Notas"
 
@@ -2370,6 +2669,10 @@ msgstr "Nada que importar"
 #: packages/core/src/app/screens/TotpSetup/TotpSetup.tsx
 msgid "Nothing usable was handed over. Open the site's 2FA page and add the code from the login instead."
 msgstr "No se ha entregado nada utilizable. Abra la página de 2FA del sitio y, en su lugar, añada el código desde el inicio de sesión."
+
+#: packages/core/src/app/hooks/useDesktopLink.tsx
+msgid "Nothing was linked."
+msgstr "No se vinculó nada."
 
 #: packages/core/src/app/screens/Settings/components/SyncConnectSection.tsx
 #~ msgid "Numbers match, approve"
@@ -2451,8 +2754,16 @@ msgid "Open attachment"
 msgstr "Abrir archivo adjunto"
 
 #: packages/core/src/app/screens/Settings/components/DesktopLinkSection.tsx
-msgid "Open Bramble on this computer, go to Settings and choose Connect a browser, then enter the code it shows."
-msgstr "Abra Bramble en este equipo, vaya a Ajustes y elija Conectar un navegador; después, introduzca el código que se muestra."
+#~ msgid "Open Bramble on this computer, go to Settings and choose Connect a browser, then enter the code it shows."
+#~ msgstr "Abra Bramble en este equipo, vaya a Ajustes y elija Conectar un navegador; después, introduzca el código que se muestra."
+
+#: packages/core/src/app/screens/Settings/components/DesktopLinkSection.tsx
+msgid "Open Bramble on this computer, go to Settings and choose Connect a browser, then press Link here. Both screens will show the same symbols."
+msgstr "Abra Bramble en este equipo, vaya a Configuración y elija Conectar un navegador; después, pulse Vincular aquí. Ambas pantallas mostrarán los mismos símbolos."
+
+#: packages/core/src/app/screens/VaultSetup/components/DesktopLinkCard.tsx
+msgid "Open Bramble on this computer, go to Settings and choose Connect a browser, then press Link. Both screens will show the same symbols."
+msgstr "Abra Bramble en este equipo, vaya a Configuración y elija Conectar un navegador; después, pulse Vincular. Ambas pantallas mostrarán los mismos símbolos."
 
 #: packages/core/src/app/screens/Settings/components/SyncConnectSection.tsx
 msgid "Open Bramble on your other device and scan the code, or paste it there."
@@ -2522,14 +2833,29 @@ msgstr "Resumen"
 msgid "Pair with another device"
 msgstr "Emparejar con otro dispositivo"
 
-#: packages/core/src/app/screens/Settings/components/DesktopLinkSection.tsx
 #: packages/core/src/app/screens/VaultSetup/components/JoinCard.tsx
 msgid "Pairing code"
 msgstr "Código de emparejamiento"
 
+#: packages/core/src/app/screens/Settings/components/MasterPasswordSection.tsx
+msgid "Pairing devices needs a master password"
+msgstr "Vincular dispositivos requiere una contraseña maestra"
+
+#: packages/core/src/app/screens/Settings/components/MasterPasswordSection.tsx
+#~ msgid "Pairing devices needs a master password, so a synced vault keeps it."
+#~ msgstr "Vincular dispositivos requiere una contraseña maestra, por lo que una bóveda sincronizada la conserva."
+
+#: packages/core/src/app/screens/Settings/components/MasterPasswordSection.tsx
+#~ msgid "Pairing devices needs a master password, so a synced vault keeps it. Disconnect this device from sync to turn it off."
+#~ msgstr "Vincular dispositivos requiere una contraseña maestra, por lo que una bóveda sincronizada la conserva. Desconecte este dispositivo de la sincronización para desactivarla."
+
 #: packages/core/src/app/screens/Settings/components/SyncConnectSection.tsx
 msgid "Pairing didn't complete."
 msgstr "No se completó el emparejamiento."
+
+#: packages/core/src/app/screens/Settings/components/SyncConnectSection.tsx
+msgid "Pairing gives the new device your vault, so it has to be authorized with your master password. Turn one on in Security, then come back to add the device."
+msgstr "La vinculación da al nuevo dispositivo su bóveda, por lo que debe autorizarse con su contraseña maestra. Active una en Seguridad y, después, vuelva para añadir el dispositivo."
 
 #: packages/core/src/app/components/SasDisplay.tsx
 msgid "Panda"
@@ -2595,8 +2921,8 @@ msgid "Password found in a known data breach"
 msgstr "Contraseña encontrada en una violación de datos conocida"
 
 #: packages/core/src/app/layouts/AppLayout.tsx
-msgid "Password generator"
-msgstr "Generador de contraseñas"
+#~ msgid "Password generator"
+#~ msgstr "Generador de contraseñas"
 
 #: packages/core/src/app/entry-modes/login.tsx
 msgid "Password strength"
@@ -2839,6 +3165,10 @@ msgstr "Quitar etiqueta"
 msgid "Remove tag {tag}"
 msgstr "Quitar la etiqueta {tag}"
 
+#: packages/core/src/app/screens/Settings/components/CombineResult.tsx
+#~ msgid "Remove the old vault"
+#~ msgstr "Eliminar la bóveda antigua"
+
 #: packages/core/src/app/entry-modes/login.tsx
 msgid "Remove URL"
 msgstr "Eliminar URL"
@@ -2934,6 +3264,10 @@ msgstr "Restaurar bóveda"
 msgid "Restoring…"
 msgstr "Restaurando…"
 
+#: packages/core/src/app/components/EntryRow.tsx
+msgid "Reused"
+msgstr "Reutilizada"
+
 #. placeholder {0}: provider.label
 #: packages/core/src/app/screens/Import/ImportShell.tsx
 msgid "Review what we found in your {0} export"
@@ -2983,6 +3317,7 @@ msgstr "Se ejecuta discretamente en la barra de menús para que las copias de se
 msgid "Santa"
 msgstr "Papá Noel"
 
+#: packages/core/src/app/entry-modes/attachments.tsx
 #: packages/core/src/app/screens/Settings/components/BackupSection.tsx
 msgid "Save"
 msgstr "Guardar"
@@ -2998,6 +3333,10 @@ msgstr "Guarde un archivo .kdbx que pueda abrir en KeePassXC o cualquier aplicac
 #: packages/core/src/app/screens/Settings/components/DataSection.tsx
 msgid "Save an encrypted .bramble copy of your vault. It still needs your master password to open."
 msgstr "Guarde una copia cifrada .bramble de su bóveda. Aún necesita su contraseña maestra para abrirla."
+
+#: packages/core/src/app/entry-modes/attachments.tsx
+msgid "Save attachment"
+msgstr "Guardar adjunto"
 
 #: packages/core/src/app/components/RecoveryCodeDisplay.tsx
 msgid "Save it somewhere safe and offline now. It's the only way back in if you forget your master password and lose your security keys, and we can't recover it for you."
@@ -3080,6 +3419,10 @@ msgstr "Desplazar hacia la izquierda"
 msgid "Scroll right"
 msgstr "Desplazar hacia la derecha"
 
+#: packages/core/src/app/screens/Import/ImportShell.tsx
+msgid "Search #{importedTag} to find them."
+msgstr "Busque #{importedTag} para encontrarlos."
+
 #: packages/core/src/app/screens/TotpSetup/TotpSetup.tsx
 msgid "Search logins"
 msgstr "Buscar inicios de sesión"
@@ -3158,6 +3501,10 @@ msgstr "URL del servidor"
 #~ msgid "Server URL (self-hosted only)"
 #~ msgstr "URL del servidor (solo autoalojado)"
 
+#: packages/core/src/app/screens/Settings/components/GeneralSection.tsx
+msgid "Set by a policy or another extension"
+msgstr "Establecido por una política u otra extensión"
+
 #: packages/core/src/app/screens/Settings/components/MasterPasswordSection.tsx
 msgid "Set password"
 msgstr "Establecer contraseña"
@@ -3181,6 +3528,10 @@ msgstr "Configurar una bóveda"
 #: packages/core/src/app/screens/Auth/Auth.tsx
 msgid "Set up a vault to start saving your passwords, cards, and notes."
 msgstr "Configure una bóveda para empezar a guardar sus contraseñas, tarjetas y notas."
+
+#: packages/core/src/app/components/AliasGenerator.tsx
+msgid "Set up aliases"
+msgstr "Configurar alias"
 
 #: packages/core/src/app/screens/Settings/components/BiometricSection.tsx
 msgid "Set up Face ID or a fingerprint on this device to use this."
@@ -3277,9 +3628,17 @@ msgstr "Sitios que ha silenciado"
 msgid "Smiley"
 msgstr "Carita sonriente"
 
+#: packages/core/src/app/screens/Settings/components/CombineResult.tsx
+msgid "Some of it didn't copy, so the old vault is kept."
+msgstr "Parte del contenido no se copió, por lo que se conserva la bóveda antigua."
+
 #: packages/core/src/app/ErrorBoundary.tsx
 msgid "Something went wrong"
 msgstr "Ha ocurrido un error"
+
+#: packages/core/src/app/hooks/useDesktopLink.tsx
+msgid "Something went wrong after linking."
+msgstr "Algo salió mal después de la vinculación."
 
 #: packages/core/src/hooks/useCryptoErrorMessage.tsx
 msgid "Something went wrong. Please try again."
@@ -3303,12 +3662,12 @@ msgstr "Llave inglesa"
 
 #: packages/core/src/app/entry-modes/ssh-key.tsx
 msgid "SSH key"
-msgstr "SSH key"
+msgstr "Clave SSH"
 
 #. placeholder {0}: key.keyType
 #: packages/core/src/app/entry-modes/ssh-key.tsx
 msgid "SSH key · {0}"
-msgstr "SSH key · {0}"
+msgstr "Clave SSH · {0}"
 
 #: packages/core/src/app/screens/Settings/components/BackupSection.tsx
 msgid "Start at login"
@@ -3380,6 +3739,10 @@ msgstr "Símbolos a usar"
 msgid "Sync"
 msgstr "Sincronización"
 
+#: packages/core/src/app/screens/Settings/components/SyncConnectSection.tsx
+msgid "Sync now"
+msgstr "Sincronizar ahora"
+
 #: packages/core/src/app/screens/Settings/components/BrowserPairingSection.tsx
 msgid "Sync this vault to the Bramble extension and fill from it without unlocking twice."
 msgstr "Sincronice esta bóveda con la extensión Bramble para rellenar desde ella sin desbloquear dos veces."
@@ -3420,6 +3783,10 @@ msgstr "Realice primero una copia de seguridad, desde Backups, para tener una co
 #: packages/core/src/app/screens/Settings/components/TapToUnlockSection.tsx
 #~ msgid "Tap a security key to unlock instead of typing the master password."
 #~ msgstr "Toque una llave de seguridad para desbloquear en lugar de escribir la contraseña maestra."
+
+#: packages/core/src/app/routes/PasskeyVerifyRoute.tsx
+msgid "Tap to confirm"
+msgstr "Tocar para confirmar"
 
 #: packages/core/src/app/screens/VaultSetup/components/JoinCard.tsx
 msgid "Tap to scan again"
@@ -3518,15 +3885,28 @@ msgstr "Ese año está fuera del rango que utilizan las tarjetas."
 msgid "That's a full vault backup. Restore it instead: it's added as a new vault, and nothing here is changed."
 msgstr "Es una copia de seguridad completa de la caja fuerte. Restáurela en su lugar: se añade como una caja fuerte nueva y no se cambia nada de aquí."
 
+#: packages/core/src/app/screens/Settings/components/BrowserPairingSection.tsx
+msgid "The browser was not linked."
+msgstr "El navegador no se vinculó."
+
+#: packages/core/src/app/screens/Settings/components/CombineResult.tsx
+#~ msgid "The copy couldn't be confirmed, so the old vault is kept."
+#~ msgstr "No se pudo confirmar la copia, por lo que se mantiene la caja fuerte antigua."
+
 #: packages/core/src/app/screens/Settings/components/DesktopLinkSection.tsx
 #~ msgid "The desktop app answered."
 #~ msgstr ""
 
-#: packages/core/src/app/screens/Settings/components/DesktopLinkSection.tsx
+#: packages/core/src/app/hooks/useDesktopLink.tsx
 msgid "The desktop app did not accept that code."
 msgstr "La aplicación de escritorio no aceptó ese código."
 
+#: packages/core/src/app/hooks/useDesktopLink.tsx
+msgid "The desktop app didn't send its vault."
+msgstr "La aplicación de escritorio no envió su bóveda."
+
 #: packages/core/src/app/screens/Settings/components/DesktopLinkSection.tsx
+#: packages/core/src/app/screens/VaultSetup/components/DesktopLinkCard.tsx
 msgid "The desktop app is showing the same symbols and waiting for you to approve there. Approve only if they match."
 msgstr "La aplicación de escritorio muestra los mismos símbolos y espera que apruebe allí. Apruebe solo si coinciden."
 
@@ -3535,16 +3915,44 @@ msgid "The desktop app is still linked, but this browser's permission to talk to
 msgstr "La aplicación de escritorio sigue vinculada, pero el permiso de este navegador para comunicarse con ella se ha desactivado."
 
 #: packages/core/src/app/screens/Settings/components/DesktopLinkSection.tsx
-msgid "The desktop app offered to share its vault with this browser. Enter the master password you use there, then compare the symbols both screens show."
-msgstr "La aplicación de escritorio ha ofrecido compartir su caja fuerte con este navegador. Introduzca la contraseña maestra que utiliza allí y compare los símbolos que muestran ambas pantallas."
+#~ msgid "The desktop app offered to share its vault with this browser. Enter the master password you use there, then compare the symbols both screens show."
+#~ msgstr "La aplicación de escritorio ha ofrecido compartir su caja fuerte con este navegador. Introduzca la contraseña maestra que utiliza allí y compare los símbolos que muestran ambas pantallas."
 
 #: packages/core/src/app/screens/Settings/components/DesktopLinkSection.tsx
 #~ msgid "The desktop app offered to share its vault with this browser. Enter the master password you use there, then confirm the symbols it shows."
 #~ msgstr "La aplicación de escritorio ha ofrecido compartir su bóveda con este navegador. Introduzca la contraseña maestra que usa allí, luego confirme los símbolos que muestra."
 
 #: packages/core/src/app/screens/Settings/components/DesktopLinkSection.tsx
+msgid "The desktop app offered to share its vault with this browser. Enter the master password you use there."
+msgstr "La aplicación de escritorio ofreció compartir su bóveda con este navegador. Introduzca la contraseña maestra que utiliza allí."
+
+#: packages/core/src/app/screens/Settings/components/DesktopLinkSection.tsx
+msgid "the desktop app's vault"
+msgstr "la bóveda de la aplicación de escritorio"
+
+#: packages/core/src/app/hooks/useDesktopLink.tsx
+msgid "The desktop app's vault did not open."
+msgstr "La bóveda de la aplicación de escritorio no se abrió."
+
+#: packages/core/src/app/screens/Settings/components/DesktopLinkSection.tsx
 #~ msgid "The desktop vault has {found} matching logins."
 #~ msgstr "La caja fuerte de escritorio tiene {found} inicios de sesión coincidentes."
+
+#: packages/core/src/app/screens/Settings/components/CombineResult.tsx
+msgid "The desktop's vault already has a backup target, so this vault's weren't brought over."
+msgstr "La bóveda de la aplicación de escritorio ya tiene un destino de copia de seguridad, por lo que no se han transferido los de esta bóveda."
+
+#: packages/core/src/app/screens/Settings/components/CombineResult.tsx
+msgid "The desktop's vault has its own email alias provider, so this vault's wasn't brought over."
+msgstr "La bóveda de la aplicación de escritorio tiene su propio proveedor de alias de correo electrónico, por lo que no se ha transferido el de esta bóveda."
+
+#: packages/core/src/app/screens/Settings/components/HiddenVaultRow.tsx
+#~ msgid "The old vault"
+#~ msgstr "La caja fuerte antigua"
+
+#: packages/core/src/app/screens/Settings/components/CombineResult.tsx
+msgid "The old vault stays"
+msgstr "Conservar la caja fuerte antigua"
 
 #: packages/core/src/app/screens/Restore/RestoreShell.tsx
 msgid "The one you saved with Export a backup, or a cloud backup."
@@ -3590,6 +3998,17 @@ msgstr "Estos destinos pertenecen a la caja fuerte en la que se encuentra. Cada 
 msgid "These versions changed while you were comparing them. Have another look."
 msgstr "Estas versiones cambiaron mientras las comparaba. Revíselas de nuevo."
 
+#: packages/core/src/app/screens/Settings/components/BrowserPairingSection.tsx
+#: packages/core/src/app/screens/Settings/components/DesktopLinkSection.tsx
+#: packages/core/src/app/screens/VaultSetup/components/DesktopLinkCard.tsx
+msgid "They don't match"
+msgstr "No coinciden"
+
+#: packages/core/src/app/screens/Settings/components/DesktopLinkSection.tsx
+#: packages/core/src/app/screens/VaultSetup/components/DesktopLinkCard.tsx
+msgid "They match"
+msgstr "Coinciden"
+
 #: packages/core/src/app/screens/Settings/components/SyncConnectSection.tsx
 msgid "They match, approve"
 msgstr "Coinciden, aprobar"
@@ -3611,8 +4030,12 @@ msgid "They're in your vault now. The transfer happened directly between the two
 msgstr "Ahora están en su caja fuerte. La transferencia se realizó directamente entre las dos aplicaciones, por lo que no hay ningún archivo que eliminar."
 
 #: packages/core/src/app/screens/Settings/components/DesktopLinkSection.tsx
-msgid "This adds the desktop's vault to this browser as a separate one. Your existing vaults stay as they are: two vaults cannot be combined automatically, because each is encrypted with its own key."
-msgstr "Esto añade la caja fuerte de la aplicación de escritorio a este navegador como una caja fuerte independiente. Sus cajas fuertes existentes permanecen como están: no se pueden combinar dos cajas fuertes automáticamente, porque cada una está cifrada con su propia clave."
+#~ msgid "This adds the desktop's vault to this browser as a separate one. Your existing vaults stay as they are: two vaults cannot be combined automatically, because each is encrypted with its own key."
+#~ msgstr "Esto añade la caja fuerte de la aplicación de escritorio a este navegador como una caja fuerte independiente. Sus cajas fuertes existentes permanecen como están: no se pueden combinar dos cajas fuertes automáticamente, porque cada una está cifrada con su propia clave."
+
+#: packages/core/src/app/screens/Settings/components/DesktopLinkSection.tsx
+msgid "This adds the desktop's vault to this browser as a separate one. Your existing vaults stay as they are."
+msgstr "Esto añade la bóveda de la aplicación de escritorio a este navegador como una bóveda independiente. Sus bóvedas existentes permanecen tal como están."
 
 #: packages/core/src/app/entry-modes/login.tsx
 msgid "This authenticator key is invalid and can't generate codes."
@@ -3633,6 +4056,30 @@ msgstr "Este navegador ya comparte esa caja fuerte con la aplicación de escrito
 #: packages/core/src/app/entry-modes/attachments.tsx
 msgid "This browser gets files only from the Bramble desktop app."
 msgstr "Este navegador solo obtiene archivos de la aplicación de escritorio de Bramble."
+
+#: packages/core/src/app/screens/Settings/components/TwoVaultsPrompt.tsx
+msgid "This browser has {browserName} ({browserEntries} entries). The desktop app has {desktopName} ({desktopEntries} entries)."
+msgstr "Este navegador tiene {browserName} ({browserEntries} entradas). La aplicación de escritorio tiene {desktopName} ({desktopEntries} entradas)."
+
+#: packages/core/src/app/screens/Settings/components/TwoVaultsPrompt.tsx
+msgid "This browser has {browserName} ({browserEntries} entries). The desktop app has {desktopName}."
+msgstr "Este navegador tiene {browserName} ({browserEntries} entradas). La aplicación de escritorio tiene {desktopName}."
+
+#: packages/core/src/app/screens/Settings/components/TwoVaultsPrompt.tsx
+msgid "This browser will unlock with the desktop app's master password."
+msgstr "Este navegador se desbloqueará con la contraseña maestra de la aplicación de escritorio."
+
+#: packages/core/src/app/screens/Settings/components/DesktopLinkSection.tsx
+#~ msgid "This browser's entries and files are copied into {desktopName}, and this browser will unlock with its master password. {browserName} is kept, locked, as \"{browserName} (before linking)\" until you delete it."
+#~ msgstr "Las entradas y archivos de este navegador se copian en {desktopName}, y este navegador se desbloqueará con su contraseña maestra. {browserName} se conserva, bloqueado, como «{browserName} (antes de vincular)» hasta que usted lo elimine."
+
+#: packages/core/src/app/screens/Settings/components/DesktopLinkSection.tsx
+#~ msgid "This browser's entries and files are copied into {desktopName}, and this browser will unlock with its master password. {browserName} stays, as \"{browserName} (before linking)\", until you delete it."
+#~ msgstr "Las entradas y archivos de este navegador se copian en {desktopName}, y este navegador se desbloqueará con su contraseña maestra. {browserName} permanece como \"{browserName} (antes de vincular)\" hasta que lo elimine."
+
+#: packages/core/src/app/screens/Settings/components/DesktopLinkSection.tsx
+msgid "This browser's entries and files move into {desktopName}, and this browser will unlock with its master password."
+msgstr "Las entradas y archivos de este navegador se mueven a {desktopName}, y este navegador se desbloqueará con su contraseña maestra."
 
 #: packages/core/src/app/bulk-actions/delete.tsx
 msgid "This can't be undone, and the deletion syncs to your other devices."
@@ -3665,6 +4112,11 @@ msgstr "Esto crea una nueva bóveda en este dispositivo y la sincroniza desde su
 #: packages/core/src/app/screens/VaultSetup/components/JoinCard.tsx
 #~ msgid "This creates a new vault on this device and syncs it from your other device. You'll register a new key here, on this device, so you never type the master password. Your other device keeps its own key."
 #~ msgstr "Esto crea una nueva bóveda en este dispositivo y la sincroniza desde su otro dispositivo. Registrará una nueva clave aquí, en este dispositivo, para que nunca tenga que escribir la contraseña maestra. Su otro dispositivo conserva su propia clave."
+
+#: packages/core/src/app/screens/Settings/components/DesktopLinkSection.tsx
+#: packages/core/src/app/screens/VaultSetup/components/DesktopLinkCard.tsx
+msgid "This desktop app links with a code. Enter the one its Connect a browser screen shows."
+msgstr "Esta aplicación de escritorio se vincula con un código. Introduzca el que muestra la pantalla Conectar un navegador."
 
 #: packages/core/src/app/screens/Settings/components/SyncConnectSection.tsx
 #: packages/core/src/app/screens/Settings/components/TapToUnlockSection.tsx
@@ -3728,6 +4180,10 @@ msgstr "Esta contraseña apareció en una violación de datos conocida."
 msgid "This removes the vault from this device. Synced copies on your other devices aren't affected, and this can't be undone here. Confirm to continue."
 msgstr "Esto elimina la bóveda de este dispositivo. Las copias sincronizadas en sus otros dispositivos no se ven afectadas, y esto no se puede deshacer aquí. Confirme para continuar."
 
+#: packages/core/src/app/screens/Settings/components/DesktopLinkSection.tsx
+msgid "This vault already syncs with the desktop app."
+msgstr "Esta bóveda ya se sincroniza con la aplicación de escritorio."
+
 #: packages/core/src/hooks/useVault.tsx
 msgid "This vault has no master password to change."
 msgstr "Esta bóveda no tiene una contraseña maestra que cambiar."
@@ -3744,9 +4200,18 @@ msgstr "Esta bóveda no tiene un código de recuperación."
 msgid "This vault syncs with the desktop app."
 msgstr "Esta bóveda se sincroniza con la aplicación de escritorio."
 
+#: packages/core/src/app/hooks/useDesktopLink.tsx
+msgid "This vault's entries didn't copy into the desktop's vault. They are still in the old vault."
+msgstr "Las entradas de esta bóveda no se copiaron en la bóveda de la aplicación de escritorio. Siguen en la bóveda antigua."
+
 #: packages/core/src/app/screens/Settings/components/BackupSection.tsx
 msgid "This vault's folder: {folder}"
 msgstr "Carpeta de esta caja fuerte: {folder}"
+
+#: packages/core/src/app/screens/Settings/components/DesktopLinkSection.tsx
+#: packages/core/src/app/screens/VaultSetup/components/DesktopLinkCard.tsx
+#~ msgid "This version of the desktop app links with a code. In its Connect a browser screen, choose to show a code, then enter it here."
+#~ msgstr "Esta versión de la aplicación de escritorio se vincula mediante un código. En la pantalla Conectar un navegador, elija mostrar un código e introdúzcalo aquí."
 
 #: packages/core/src/app/components/ui/file-password-dialog.tsx
 msgid "Those passwords don't match."
@@ -3765,8 +4230,12 @@ msgid "Title"
 msgstr "Título"
 
 #: packages/core/src/app/screens/Settings/components/DesktopLinkSection.tsx
-msgid "To add the desktop app's vault, continue in a window."
-msgstr "Para añadir la caja fuerte de la aplicación de escritorio, continúe en una ventana."
+#~ msgid "To add the desktop app's vault, continue in a window."
+#~ msgstr "Para añadir la caja fuerte de la aplicación de escritorio, continúe en una ventana."
+
+#: packages/core/src/app/screens/Settings/components/DesktopLinkSection.tsx
+#~ msgid "To bring in the desktop app's vault, open Connect a browser there and link again."
+#~ msgstr "Para incorporar la caja fuerte de la aplicación de escritorio, abra Conectar un navegador allí y vuelva a vincularla."
 
 #: packages/core/src/app/screens/Settings/components/GeneralSection.tsx
 msgid "Toggle autofill on web pages"
@@ -3779,6 +4248,14 @@ msgstr "Alternar el proveedor de claves de acceso de Bramble"
 #: packages/core/src/app/screens/Settings/components/GeneralSection.tsx
 msgid "Toggle breach checks"
 msgstr "Comprobación de vulnerabilidades"
+
+#: packages/core/src/app/screens/Settings/components/GeneralSection.tsx
+msgid "Toggle confirm passkeys once per unlock"
+msgstr "Alternar la confirmación de passkeys una vez por desbloqueo"
+
+#: packages/core/src/app/screens/Settings/components/GeneralSection.tsx
+msgid "Toggle default password manager"
+msgstr "Alternar el gestor de contraseñas predeterminado"
 
 #: packages/core/src/app/screens/Settings/components/GeneralSection.tsx
 msgid "Toggle keyboard suggestions"
@@ -3850,12 +4327,23 @@ msgid "Trumpet"
 msgstr "Trompeta"
 
 #: packages/core/src/app/ErrorBoundary.tsx
+#: packages/core/src/app/screens/Settings/components/DesktopLinkSection.tsx
+#: packages/core/src/app/screens/VaultSetup/components/DesktopLinkCard.tsx
 msgid "Try again"
 msgstr "Intentar de nuevo"
 
 #: packages/core/src/app/screens/Settings/components/SyncConnectSection.tsx
 msgid "TURN / ICE servers URL"
 msgstr "URL de servidores TURN / ICE"
+
+#: packages/core/src/app/screens/Settings/components/SyncConnectSection.tsx
+msgid "Turn on master password"
+msgstr "Activar contraseña maestra"
+
+#: packages/core/src/app/components/DefaultManagerCard.tsx
+#: packages/core/src/app/screens/Settings/components/GeneralSection.tsx
+msgid "Turns off the browser's own password manager"
+msgstr "Desactiva el gestor de contraseñas del propio navegador"
 
 #: packages/core/src/app/components/SasDisplay.tsx
 msgid "Turtle"
@@ -4003,6 +4491,10 @@ msgstr "Desbloquear la caja fuerte con el código de acceso."
 #~ msgid "Unlock your vault with your security key"
 #~ msgstr "Desbloquee su bóveda con su llave de seguridad"
 
+#: packages/core/src/app/screens/Settings/components/GeneralSection.tsx
+msgid "Unlocking counts as confirming it's you until the vault locks."
+msgstr "El desbloqueo cuenta como confirmar su identidad hasta que la bóveda se bloquee."
+
 #: packages/core/src/app/screens/Auth/Auth.tsx
 #: packages/core/src/app/screens/Import/components/UnlockGate.tsx
 msgid "Unlocking…"
@@ -4016,6 +4508,18 @@ msgstr "Dispositivo sin nombre"
 msgid "Unsigned"
 msgstr "Sin firmar"
 
+#: packages/core/src/app/screens/Settings/components/GeneralSection.tsx
+msgid "Until app closes"
+msgstr "Hasta que se cierre la app"
+
+#: packages/core/src/app/screens/Settings/components/GeneralSection.tsx
+msgid "Until Bramble quits"
+msgstr "Hasta que Bramble se cierre"
+
+#: packages/core/src/app/screens/Settings/components/GeneralSection.tsx
+msgid "Until browser closes"
+msgstr "Hasta que se cierre el navegador"
+
 #: packages/core/src/app/screens/Settings/components/UpdatesSection.tsx
 msgid "Update and restart"
 msgstr "Actualizar y reiniciar"
@@ -4028,6 +4532,7 @@ msgstr "Actualizar Bramble"
 msgid "Update failed: {error}"
 msgstr "Error al actualizar: {error}"
 
+#: packages/core/src/app/components/UpdateCard.tsx
 #: packages/core/src/app/update-prompt-copy.tsx
 msgid "Update now"
 msgstr "Actualizar ahora"
@@ -4048,6 +4553,10 @@ msgstr "Actualizaciones"
 #: packages/core/src/app/entry-modes/login.tsx
 msgid "Use {currentSite}"
 msgstr "Usar {currentSite}"
+
+#: packages/core/src/app/screens/Settings/components/AppearanceSection.tsx
+msgid "Use a different language from your system"
+msgstr "Usar un idioma diferente al del sistema"
 
 #: packages/core/src/app/screens/Settings/components/GeneralSection.tsx
 msgid "Use Bramble for passkeys"
@@ -4074,8 +4583,12 @@ msgid "Use password"
 msgstr "Usar contraseña"
 
 #: packages/core/src/app/routes/PasskeyVerifyRoute.tsx
-msgid "Use security key"
-msgstr "Usar llave de seguridad"
+#~ msgid "Use security key"
+#~ msgstr "Usar llave de seguridad"
+
+#: packages/core/src/app/screens/VaultSetup/components/SetupHeader.tsx
+msgid "Use the vault from the Bramble desktop app on this computer."
+msgstr "Utilice la caja fuerte de la aplicación de escritorio Bramble en este equipo."
 
 #: packages/core/src/app/screens/EntryDetail/ConflictBanner.tsx
 msgid "Use this one"
@@ -4114,6 +4627,14 @@ msgstr "Nombre de usuario"
 msgid "Username or email"
 msgstr "Nombre de usuario o correo electrónico"
 
+#: packages/core/src/app/screens/Settings/components/BrowserPairingSection.tsx
+#~ msgid "Using an older extension? Show a code instead"
+#~ msgstr "¿Utiliza una extensión antigua? Mostrar un código en su lugar"
+
+#: packages/core/src/app/screens/VaultSetup/components/DesktopLinkBanner.tsx
+msgid "Using Bramble desktop?"
+msgstr "¿Utiliza Bramble de escritorio?"
+
 #: packages/core/src/app/entry-modes/custom-fields.tsx
 msgid "Value"
 msgstr "Valor"
@@ -4141,6 +4662,10 @@ msgstr "Bóveda restaurada"
 msgid "Vault unlocked"
 msgstr "Bóveda desbloqueada"
 
+#: packages/core/src/app/screens/Settings/components/CombineResult.tsx
+msgid "Vaults combined"
+msgstr "Bóvedas combinadas"
+
 #: packages/core/src/app/entry-modes/login.tsx
 msgid "verification code"
 msgstr "código de verificación"
@@ -4158,6 +4683,8 @@ msgid "Version"
 msgstr "Versión"
 
 #. placeholder {0}: found.version
+#. placeholder {0}: update.version
+#: packages/core/src/app/components/UpdateCard.tsx
 #: packages/core/src/app/screens/Settings/components/UpdatesSection.tsx
 msgid "Version {0} is available"
 msgstr "La versión {0} está disponible."
@@ -4174,14 +4701,25 @@ msgstr "Muy débil"
 msgid "Visible"
 msgstr "Visible"
 
+#. placeholder {0}: linkPending.label
+#: packages/core/src/app/screens/Settings/components/BrowserPairingSection.tsx
+msgid "Waiting for {0}…"
+msgstr "Esperando {0}…"
+
+#: packages/core/src/app/screens/Settings/components/BrowserPairingSection.tsx
+msgid "Waiting for {finishing} to finish linking…"
+msgstr "Esperando a que {finishing} termine de vincular…"
+
 #: packages/core/src/app/screens/Settings/components/SyncConnectSection.tsx
 msgid "Waiting for a device to join…"
 msgstr "Esperando que un dispositivo se una..."
 
 #: packages/core/src/app/screens/Settings/components/DesktopLinkSection.tsx
+#: packages/core/src/app/screens/VaultSetup/components/DesktopLinkCard.tsx
 msgid "Waiting for the desktop app…"
 msgstr "Esperando la aplicación de escritorio…"
 
+#: packages/core/src/app/routes/PasskeyVerifyRoute.tsx
 #: packages/core/src/app/screens/Auth/Auth.tsx
 #: packages/core/src/app/screens/Settings/components/DeleteVaultSection.tsx
 msgid "Waiting for your key…"
@@ -4198,6 +4736,10 @@ msgstr "URL de WebDAV"
 #: packages/core/src/app/entry-modes/login.tsx
 msgid "Website"
 msgstr "Sitio web"
+
+#: packages/core/src/app/components/AliasGenerator.tsx
+msgid "Website (optional)"
+msgstr "Sitio web (opcional)"
 
 #: packages/core/src/app/entry-modes/login.tsx
 msgid "Website URL"
@@ -4259,6 +4801,10 @@ msgstr "Está usando la versión más reciente ({version})."
 #: packages/core/src/app/OptionsApp.tsx
 msgid "You can close this tab and use the {0} popup."
 msgstr "Puede cerrar esta pestaña y usar la ventana emergente de {0}."
+
+#: packages/core/src/app/screens/Settings/components/DesktopLinkSection.tsx
+msgid "You have two vaults"
+msgstr "Tiene dos cajas fuertes"
 
 #: packages/core/src/app/screens/Import/ImportShell.tsx
 msgid "You need a vault before you can import into it"

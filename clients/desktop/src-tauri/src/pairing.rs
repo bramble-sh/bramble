@@ -18,6 +18,7 @@
 //! pairing does *not* cover.
 
 use std::{
+    collections::BTreeMap,
     fs,
     path::{Path, PathBuf},
     sync::Mutex,
@@ -29,27 +30,9 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use vault_crypto::{handshake, roster_sig};
 
+use crate::storage;
+
 type Res<T> = Result<T, String>;
-
-/// Unambiguous alphabet: no I/L/O/U or digits that read as letters, so a code read off one
-/// window and typed into another does not fail on a character the user cannot distinguish.
-const CODE_ALPHABET: &[u8] = b"23456789ABCDEFGHJKMNPQRSTVWXYZ";
-
-/// 8 characters over a 30-character alphabet is a little over 39 bits. Ample against online
-/// guessing, given the code is single-use, expires, and burns after a handful of attempts.
-const CODE_LEN: usize = 8;
-
-/// Long enough to read a code off the screen and type it, short enough that an abandoned
-/// pairing does not leave a usable secret lying around.
-const CODE_TTL_MS: u64 = 3 * 60 * 1000;
-
-/// Wrong guesses before the code is destroyed. The window is already tiny; this removes
-/// online grinding as a consideration entirely.
-const MAX_ATTEMPTS: u8 = 5;
-
-/// HKDF-style domain separation, so a code can never be mistaken for key material from
-/// anywhere else in the system.
-const PSK_INFO: &[u8] = b"bramble/desktop/extension-pairing/psk/v1";
 
 /// Derives the key that seals pairing.json from the identity's private key.
 const SEAL_INFO: &[u8] = b"bramble/desktop/extension-pairing/allowlist-seal/v1";
@@ -79,18 +62,40 @@ pub struct PairedPeer {
 /// keypair would silently pair against a freshly generated identity and every browser in the
 /// list would stop working with no indication why.
 ///
-/// Any process running as the user can write this file, so `seal` signs the other two fields
-/// with a key only the identity yields. A file that fails it keeps no peers (see `read_trusted`).
+/// Any process running as the user can write this file, so `seal` signs the other fields with
+/// a key only the identity yields. A file that fails it keeps no peers (see `read_trusted`).
 #[derive(Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct PairingFile {
     #[serde(default)]
     public_key: String,
+    /// The one list kept for the whole app before each vault had its own. Frozen: nothing is
+    /// added to it, and a vault with no list yet takes its links from here (see `vault_peers`).
     #[serde(default)]
     peers: Vec<PairedPeer>,
+    /// The browsers linked to each vault, by vault id. A browser is served only while a vault it
+    /// is linked to is the one open (see `admitted`).
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    vaults: BTreeMap<String, Vec<PairedPeer>>,
     #[serde(default, skip_serializing_if = "String::is_empty")]
     seal: String,
 }
+
+impl PairingFile {
+    fn has_links(&self) -> bool {
+        !self.peers.is_empty() || self.vaults.values().any(|peers| !peers.is_empty())
+    }
+}
+
+/// Where the webview records the vault it has open, and the vaults on this device (the
+/// `ACTIVE_VAULT_KEY` and `VAULT_REGISTRY_KEY` it writes to meta.json).
+pub(crate) const ACTIVE_VAULT_KEY: &str = "active-vault";
+
+/// Why a browser gets nothing: the vault open now is not one it is linked to.
+pub(crate) const NOT_LINKED: &str = "not linked to the open vault";
+/// What a browser no vault here is linked to is told, so it can drop its link.
+pub(crate) const UNLINKED: &str = "not linked to this app";
+const VAULT_REGISTRY_KEY: &str = "vault.registry";
 
 /// Both halves together, so the two can never drift apart across separate stores.
 #[derive(Clone, Serialize, Deserialize)]
@@ -104,14 +109,36 @@ struct Identity {
     sealed: bool,
 }
 
-/// A pairing the user has opened but no extension has completed yet.
-struct PendingCode {
-    code: String,
+/// How long a Connect dialog accepts an emoji link, and how long one link waits on both answers.
+pub const LINK_WINDOW_MS: u64 = 3 * 60 * 1000;
+
+/// An open Connect dialog: emoji links are accepted until it closes or expires, one at a time.
+struct LinkWindow {
     expires_at: u64,
-    attempts: u8,
+    in_flight: bool,
 }
 
-static PENDING: Mutex<Option<PendingCode>> = Mutex::new(None);
+static LINK_WINDOW: Mutex<Option<LinkWindow>> = Mutex::new(None);
+
+/// Open the dialog's window for an emoji link. Replaces any window already open.
+pub fn begin_link_window() {
+    *LINK_WINDOW.lock().unwrap() = Some(LinkWindow {
+        expires_at: now_ms() + LINK_WINDOW_MS,
+        in_flight: false,
+    });
+}
+
+/// A link attempt ended before reaching the user's screen: free the window for the next one.
+pub fn end_link_attempt() {
+    if let Some(window) = LINK_WINDOW.lock().unwrap().as_mut() {
+        window.in_flight = false;
+    }
+}
+
+/// Close the window: the dialog went away, a link failed, or one succeeded.
+pub fn cancel_link_window() {
+    *LINK_WINDOW.lock().unwrap() = None;
+}
 
 fn now_ms() -> u64 {
     SystemTime::now()
@@ -154,8 +181,14 @@ fn seal_key(id: &Identity) -> String {
 }
 
 fn sealed_fields(file: &PairingFile) -> Res<String> {
-    serde_json::to_string(&(&file.public_key, &file.peers))
-        .map_err(|e| format!("encode pairing state: {e}"))
+    // The per-vault lists joined the seal when they arrived. A file without any still verifies
+    // against the seal an earlier build wrote, so upgrading keeps every link it trusted.
+    let encoded = if file.vaults.is_empty() {
+        serde_json::to_string(&(&file.public_key, &file.peers))
+    } else {
+        serde_json::to_string(&(&file.public_key, &file.peers, &file.vaults))
+    };
+    encoded.map_err(|e| format!("encode pairing state: {e}"))
 }
 
 fn sign_seal(id: &Identity, file: &PairingFile) -> Res<String> {
@@ -180,16 +213,25 @@ fn sealed_identity() -> Res<Option<Identity>> {
 /// none, so writing it is never a way onto the allowlist. Before sealing (or with no key at
 /// all) the peers are returned as they stand, for listing; `identity` decides whether to trust them.
 fn read_trusted(root: &Path) -> Res<PairingFile> {
-    let mut file = read_file(root)?;
-    if let Some(id) = sealed_identity()? {
-        if !seal_holds(&id, &file) {
-            if !file.peers.is_empty() {
-                log::warn!("pairing.json was changed outside Bramble; not trusting its browsers");
-            }
-            file.peers.clear();
+    let (mut file, trusted) = read_checked(root)?;
+    if !trusted {
+        if file.has_links() {
+            log::warn!("pairing.json was changed outside Bramble; not trusting its browsers");
         }
+        file.peers.clear();
+        file.vaults.clear();
     }
     Ok(file)
+}
+
+/// pairing.json as it stands, and whether this app's seal holds over it.
+fn read_checked(root: &Path) -> Res<(PairingFile, bool)> {
+    let file = read_file(root)?;
+    let trusted = match sealed_identity()? {
+        Some(id) => seal_holds(&id, &file),
+        None => true,
+    };
+    Ok((file, trusted))
 }
 
 /// Write pairing.json, sealed whenever this device's identity seals it.
@@ -327,7 +369,7 @@ fn identity(root: &Path) -> Res<(String, String)> {
         return Ok((id.private_key, id.public_key));
     }
 
-    if !file.peers.is_empty() {
+    if file.has_links() {
         return Err("This device's pairing key is missing from the keychain, so the browsers listed below can no longer connect. Disconnect them here to start again.".into());
     }
 
@@ -346,146 +388,326 @@ pub fn public_key(root: &Path) -> Res<String> {
     Ok(identity(root)?.1)
 }
 
-pub fn paired_peers(root: &Path) -> Res<Vec<PairedPeer>> {
-    Ok(read_trusted(root)?.peers)
+/// The vault open in the app: the active one the webview recorded, else the only one there is.
+/// With several and none recorded there is no safe answer, so nobody is admitted. Before the
+/// registry existed the one vault had no id, which storage calls `DEFAULT_VAULT_ID`.
+fn open_vault_id(root: &Path) -> Res<Option<String>> {
+    if let Some(serde_json::Value::String(id)) = storage::ops::get_meta(root, ACTIVE_VAULT_KEY)? {
+        return Ok(Some(id));
+    }
+    Ok(match storage::ops::get_meta(root, VAULT_REGISTRY_KEY)? {
+        None => Some(storage::ops::DEFAULT_VAULT_ID.to_string()),
+        Some(registry) => match registry["vaults"].as_array().map(Vec::as_slice) {
+            Some([only]) => only["id"].as_str().map(str::to_string),
+            _ => None,
+        },
+    })
 }
 
-/// Revoke a browser. The next connection from it fails the KK handshake, because its static
-/// key is no longer one this device will accept.
+/// When a vault was made, from the registry. None for a vault it does not date.
+fn vault_created_at(root: &Path, vault_id: &str) -> Res<Option<u64>> {
+    let registry = storage::ops::get_meta(root, VAULT_REGISTRY_KEY)?.unwrap_or_default();
+    Ok(registry["vaults"]
+        .as_array()
+        .and_then(|vaults| vaults.iter().find(|v| v["id"] == vault_id))
+        .and_then(|v| v["createdAt"].as_f64())
+        .map(|at| at as u64))
+}
+
+/// A vault's browsers. One with no list of its own yet takes the app-wide list an earlier build
+/// kept, cut to the links made since the vault existed: those are the ones that already worked
+/// with it. A vault the registry does not date keeps them all, so nothing that worked stops.
+fn vault_peers(root: &Path, file: &PairingFile, vault_id: &str) -> Res<Vec<PairedPeer>> {
+    if let Some(peers) = file.vaults.get(vault_id) {
+        return Ok(peers.clone());
+    }
+    let since = vault_created_at(root, vault_id)?.unwrap_or(0);
+    Ok(file
+        .peers
+        .iter()
+        .filter(|p| p.paired_at >= since)
+        .cloned()
+        .collect())
+}
+
+/// The browsers linked to the vault open now. None when no vault is open.
+pub fn paired_peers(root: &Path) -> Res<Vec<PairedPeer>> {
+    let file = read_trusted(root)?;
+    match open_vault_id(root)? {
+        Some(vault_id) => vault_peers(root, &file, &vault_id),
+        None => Ok(Vec::new()),
+    }
+}
+
+/// Whether a browser may be served now: it is linked to the vault that is open, or its link to
+/// that vault is pending. Checked when it connects, on every frame it sends, and before anything
+/// is pushed to it, so a browser linked to one vault gets nothing while another is open.
+pub fn admitted(root: &Path, public_key: &str) -> bool {
+    pending_for_open_vault(root, public_key) || listed(root, public_key)
+}
+
+/// Whether a browser's pairing with the open vault is complete. A pending one is served for the
+/// claim and the copy only: no credential, no fill.
+pub fn listed(root: &Path, public_key: &str) -> bool {
+    paired_peers(root).is_ok_and(|peers| peers.iter().any(|p| p.public_key == public_key))
+}
+
+/// How long a confirmed link waits for the browser to report its pairing complete.
+const PENDING_MS: u64 = 5 * 60_000;
+
+/// A link both screens confirmed, served for the claim and the vault copy but listed only once
+/// the browser has the vault, so a pairing is never half made. One at a time, like the window.
+struct PendingLink {
+    public_key: String,
+    label: String,
+    vault_id: String,
+    expires_at: u64,
+}
+
+static PENDING: Mutex<Option<PendingLink>> = Mutex::new(None);
+
+fn pending_key(public_key: &str) -> bool {
+    PENDING.lock().is_ok_and(|p| {
+        p.as_ref()
+            .is_some_and(|p| p.public_key == public_key && p.expires_at > now_ms())
+    })
+}
+
+fn pending_for_open_vault(root: &Path, public_key: &str) -> bool {
+    let vault = PENDING.lock().ok().and_then(|p| {
+        p.as_ref()
+            .filter(|p| p.public_key == public_key && p.expires_at > now_ms())
+            .map(|p| p.vault_id.clone())
+    });
+    vault.is_some_and(|v| open_vault_id(root).ok().flatten() == Some(v))
+}
+
+/// List the pending link, now that the browser holds the vault. False when this browser's link
+/// is not the pending one, has expired, or its vault is no longer open.
+pub fn complete_link(root: &Path, public_key: &str) -> Res<bool> {
+    let pending = {
+        let mut slot = PENDING.lock().unwrap();
+        match slot.as_ref() {
+            Some(p) if p.public_key == public_key && p.expires_at > now_ms() => slot.take(),
+            _ => None,
+        }
+    };
+    let Some(pending) = pending else {
+        return Ok(false);
+    };
+    if open_vault_id(root)?.as_deref() != Some(pending.vault_id.as_str()) {
+        return Ok(false);
+    }
+    add_peer(root, &pending.public_key, &pending.label)?;
+    Ok(true)
+}
+
+/// Forget the pending link if it is `public_key`'s. True when it was.
+pub fn drop_pending_for(public_key: &str) -> bool {
+    let Ok(mut slot) = PENDING.lock() else {
+        return false;
+    };
+    if slot.as_ref().is_some_and(|p| p.public_key == public_key) {
+        *slot = None;
+        return true;
+    }
+    false
+}
+
+/// Forget the pending link: its dialog closed, so its pairing is abandoned.
+pub fn drop_pending() {
+    if let Ok(mut slot) = PENDING.lock() {
+        *slot = None;
+    }
+}
+
+/// What a browser that is not admitted is told: another vault is open (`NOT_LINKED`), or no vault
+/// here is linked to it (`UNLINKED`). Unsure means the former, so nothing drops a link by mistake.
+pub fn refusal(root: &Path, public_key: &str) -> &'static str {
+    match linked_anywhere(root, public_key) {
+        Ok(false) => UNLINKED,
+        _ => NOT_LINKED,
+    }
+}
+
+fn linked_anywhere(root: &Path, public_key: &str) -> Res<bool> {
+    if pending_key(public_key) {
+        return Ok(true);
+    }
+    let (file, trusted) = read_checked(root)?;
+    // Links this app's seal does not cover: which are real is unknown, so unsure.
+    if !trusted && file.has_links() {
+        return Err("pairing.json is not trusted".into());
+    }
+    let registry = storage::ops::get_meta(root, VAULT_REGISTRY_KEY)?.unwrap_or_default();
+    let mut vaults: Vec<String> = registry["vaults"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|v| v["id"].as_str().map(str::to_string))
+        .collect();
+    vaults.extend(open_vault_id(root)?);
+    for vault_id in vaults {
+        if vault_peers(root, &file, &vault_id)?
+            .iter()
+            .any(|p| p.public_key == public_key)
+        {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+/// Revoke a browser from the vault open now. Its next connection fails the KK handshake, and
+/// a vault it is also linked to keeps it.
 pub fn forget_peer(root: &Path, public_key: &str) -> Res<bool> {
+    let Some(vault_id) = open_vault_id(root)? else {
+        return Ok(false);
+    };
+    forget_peer_in(root, public_key, &vault_id)
+}
+
+/// Revoke a browser from one vault, open or not. Other vaults it is linked to keep it.
+pub fn forget_peer_in(root: &Path, public_key: &str, vault_id: &str) -> Res<bool> {
     let mut file = read_trusted(root)?;
-    let before = file.peers.len();
-    file.peers.retain(|p| p.public_key != public_key);
-    let removed = file.peers.len() != before;
+    let mut peers = vault_peers(root, &file, vault_id)?;
+    let before = peers.len();
+    peers.retain(|p| p.public_key != public_key);
+    let removed = peers.len() != before;
     if removed {
+        file.vaults.insert(vault_id.to_string(), peers);
         save(root, &mut file)?;
     }
     Ok(removed)
 }
 
-fn random_code() -> Res<String> {
-    let mut bytes = vec![0u8; CODE_LEN];
-    getrandom::fill(&mut bytes).map_err(|e| format!("random: {e}"))?;
-    // Modulo bias over a 30-character alphabet is at most ~2^-4 of a bit across 8 draws and
-    // does not matter for a single-use secret that expires in three minutes.
-    Ok(bytes
-        .iter()
-        .map(|b| CODE_ALPHABET[*b as usize % CODE_ALPHABET.len()] as char)
-        .collect())
-}
-
-/// Open a pairing window and return the code to show the user. Replaces any code already
-/// outstanding, so opening the dialog twice cannot leave two valid secrets.
-pub fn begin_pairing() -> Res<String> {
-    let code = random_code()?;
-    *PENDING.lock().unwrap() = Some(PendingCode {
-        code: code.clone(),
-        expires_at: now_ms() + CODE_TTL_MS,
-        attempts: 0,
-    });
-    Ok(code)
-}
-
-/// Close the pairing window. Called when the user dismisses the dialog: the code is a bearer
-/// secret, so it must stop working the moment they stop looking at it.
-pub fn cancel_pairing() {
-    *PENDING.lock().unwrap() = None;
-}
-
-pub fn pairing_open() -> bool {
-    let mut pending = PENDING.lock().unwrap();
-    if pending.as_ref().is_some_and(|p| p.expires_at <= now_ms()) {
-        *pending = None;
+/// Pin a link from before the per-vault lists to `vault_id`, which it has just proved it syncs
+/// with, so no other vault takes it after this. A link made since is never touched.
+pub fn pin_link(root: &Path, public_key: &str, vault_id: &str) -> Res<bool> {
+    let mut file = read_trusted(root)?;
+    if !file.peers.iter().any(|p| p.public_key == public_key) {
+        return Ok(false);
     }
-    pending.is_some()
-}
-
-/// Take the live code, consuming an attempt. `None` once it has expired or been exhausted.
-fn claim_attempt() -> Option<String> {
-    let mut guard = PENDING.lock().unwrap();
-    let pending = guard.as_mut()?;
-    if pending.expires_at <= now_ms() {
-        *guard = None;
-        return None;
+    let peers = vault_peers(root, &file, vault_id)?;
+    if !peers.iter().any(|p| p.public_key == public_key) {
+        return Ok(false);
     }
-    pending.attempts += 1;
-    let code = pending.code.clone();
-    if pending.attempts >= MAX_ATTEMPTS {
-        *guard = None;
+    // Its own list first, so the vault keeps every link it takes from the old one.
+    file.vaults.insert(vault_id.to_string(), peers);
+    file.peers.retain(|p| p.public_key != public_key);
+    for (id, list) in file.vaults.iter_mut() {
+        if *id != vault_id {
+            list.retain(|p| p.public_key != public_key);
+        }
     }
-    Some(code)
+    save(root, &mut file)?;
+    Ok(true)
 }
 
-/// The 32-byte PSK the handshake wants, derived from the typed code. Domain-separated so the
-/// code cannot collide with key material from elsewhere.
-pub(crate) fn psk_for(code: &str) -> String {
-    let mut hasher = Sha256::new();
-    hasher.update(PSK_INFO);
-    // Case-fold: the alphabet is uppercase and users will type lowercase.
-    hasher.update(code.trim().to_ascii_uppercase().as_bytes());
-    B64.encode(hasher.finalize())
-}
+// The connection-accepting half, driven by the socket listener. Kept apart from any I/O so the
+// protocol is testable end to end without it, which is where the security-critical logic wants
+// its tests anyway.
 
-// The four below are the connection-accepting half, consumed by the socket listener in the
-// next slice. Kept here rather than held back so the protocol is testable end to end without
-// any I/O, which is where the security-critical logic wants its tests anyway.
-#[allow(dead_code)]
 /// A handshake in flight, before it has earned a place in the allowlist.
 pub struct Handshake {
     pub session_id: u32,
-    /// Set only for a pairing handshake; `None` for an established peer.
-    paired_label: Option<String>,
+    /// Set only for an emoji link handshake: the label the browser gave itself.
+    link_label: Option<String>,
+    /// Set for a browser that is not admitted: what it is told once the handshake is done.
+    refused: Option<&'static str>,
+}
+
+impl Handshake {
+    /// The browser's label when this is an emoji link handshake.
+    pub fn link_label(&self) -> Option<&str> {
+        self.link_label.as_deref()
+    }
+
+    /// What a browser that is not admitted is told, sealed, once the handshake is done.
+    pub fn refused(&self) -> Option<&'static str> {
+        self.refused
+    }
 }
 
 /// Begin answering a connection from an established peer.
-#[allow(dead_code)]
 pub fn accept_known(root: &Path, peer_public_key: &str) -> Res<Handshake> {
     let (priv_key, _) = identity(root)?;
-    let known = read_trusted(root)?
-        .peers
-        .iter()
-        .any(|p| p.public_key == peer_public_key);
-    if !known {
-        return Err("unknown peer".into());
+    if !admitted(root, peer_public_key) {
+        return Err(NOT_LINKED.into());
     }
     let session_id = handshake::handshake_start_responder(priv_key, peer_public_key.to_string())
         .map_err(|e| format!("start responder: {e:?}"))?;
     Ok(Handshake {
         session_id,
-        paired_label: None,
+        link_label: None,
+        refused: None,
     })
 }
 
-/// Begin answering a pairing attempt. Fails when no pairing window is open, which is what
-/// stops a background process from pairing itself while the user is not looking.
-#[allow(dead_code)]
-pub fn accept_pairing(root: &Path, label: &str) -> Res<Handshake> {
-    let code = claim_attempt().ok_or("no pairing in progress")?;
+/// Answer a browser that is not admitted, so its refusal can be sealed. Only the app it paired
+/// with can then tell it to drop its link, and a hello naming a key it does not hold fails the
+/// handshake and learns nothing.
+pub fn accept_refused(root: &Path, peer_public_key: &str) -> Res<Handshake> {
     let (priv_key, _) = identity(root)?;
-    let session_id = handshake::handshake_enroll_responder(priv_key, psk_for(&code))
-        .map_err(|e| format!("start enroll responder: {e:?}"))?;
+    let session_id = handshake::handshake_start_responder(priv_key, peer_public_key.to_string())
+        .map_err(|e| format!("start responder: {e:?}"))?;
     Ok(Handshake {
         session_id,
-        paired_label: Some(label.to_string()),
+        link_label: None,
+        refused: Some(refusal(root, peer_public_key)),
     })
 }
 
-/// Feed a handshake message through. On the message that completes a *pairing* handshake the
-/// peer's static key is allowlisted, which is the only place a peer is ever added: a wrong
-/// code fails the AEAD before reaching here, so completion is the proof.
-#[allow(dead_code)]
-pub fn read_message(root: &Path, hs: &Handshake, message_b64: &str) -> Res<Step> {
-    let result = handshake::handshake_read(hs.session_id, message_b64.to_string())
-        .map_err(|e| format!("handshake read: {e:?}"))?;
-    if result.done {
-        if let Some(label) = &hs.paired_label {
-            let peer = handshake::handshake_remote_static(hs.session_id)
-                .map_err(|e| format!("remote static: {e:?}"))?;
-            add_peer(root, &peer, label)?;
-            // The code has done its job; leaving it live would allow a second pairing.
-            cancel_pairing();
+/// Begin answering an emoji link. Only inside an open Connect dialog, and one at a time, so
+/// nothing can put a prompt in front of the user that they did not open the dialog for.
+pub fn accept_link(root: &Path, label: &str) -> Res<Handshake> {
+    {
+        let mut window = LINK_WINDOW.lock().unwrap();
+        let open = window
+            .as_mut()
+            .filter(|w| w.expires_at > now_ms())
+            .ok_or("no link window open")?;
+        if open.in_flight {
+            return Err("a link is already in progress".into());
+        }
+        open.in_flight = true;
+    }
+    let started = identity(root).and_then(|(priv_key, _)| {
+        handshake::handshake_link_responder(priv_key)
+            .map_err(|e| format!("start link responder: {e:?}"))
+    });
+    match started {
+        Ok(session_id) => Ok(Handshake {
+            session_id,
+            link_label: Some(label.to_string()),
+            refused: None,
+        }),
+        Err(e) => {
+            cancel_link_window();
+            Err(e)
         }
     }
+}
+
+/// Hold a browser both sides confirmed as pending, and close the window behind it. It is listed
+/// once it reports its pairing complete (`complete_link`).
+pub fn finish_link(root: &Path, public_key: &str, label: &str) -> Res<()> {
+    cancel_link_window();
+    let vault_id = open_vault_id(root)?.ok_or("no vault is open to link a browser to")?;
+    *PENDING.lock().unwrap() = Some(PendingLink {
+        public_key: public_key.to_string(),
+        label: label.to_string(),
+        vault_id,
+        expires_at: now_ms() + PENDING_MS,
+    });
+    Ok(())
+}
+
+/// Feed a handshake message through. Nothing is allowlisted here: a browser is added only once
+/// both screens have confirmed its link (`finish_link`).
+pub fn read_message(hs: &Handshake, message_b64: &str) -> Res<Step> {
+    let result = handshake::handshake_read(hs.session_id, message_b64.to_string())
+        .map_err(|e| format!("handshake read: {e:?}"))?;
     Ok(Step {
         message: result.message,
         done: result.done,
@@ -493,26 +715,28 @@ pub fn read_message(root: &Path, hs: &Handshake, message_b64: &str) -> Res<Step>
 }
 
 /// One turn of a handshake: what to send back, if anything, and whether that was the last.
-#[allow(dead_code)]
 pub struct Step {
     pub message: Option<String>,
     pub done: bool,
 }
 
+/// Link a browser to the vault open now: the one whose Connect dialog it came through.
 fn add_peer(root: &Path, public_key: &str, label: &str) -> Res<()> {
+    let vault_id = open_vault_id(root)?.ok_or("no vault is open to link a browser to")?;
     let mut file = read_trusted(root)?;
+    let mut peers = vault_peers(root, &file, &vault_id)?;
     // Re-pairing an existing browser refreshes it rather than adding a duplicate that would
     // then need revoking twice.
-    file.peers.retain(|p| p.public_key != public_key);
-    file.peers.push(PairedPeer {
+    peers.retain(|p| p.public_key != public_key);
+    peers.push(PairedPeer {
         public_key: public_key.to_string(),
         label: label.to_string(),
         paired_at: now_ms(),
     });
+    file.vaults.insert(vault_id, peers);
     save(root, &mut file)
 }
 
-#[allow(dead_code)]
 pub fn close(hs: &Handshake) {
     handshake::handshake_close(hs.session_id);
 }
@@ -527,6 +751,7 @@ static TEST_LOCK: Mutex<()> = Mutex::new(());
 pub(crate) fn test_lock() -> std::sync::MutexGuard<'static, ()> {
     let guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     *TEST_STORE.lock().unwrap() = None;
+    drop_pending();
     guard
 }
 
@@ -546,33 +771,24 @@ mod tests {
         *TEST_STORE.lock().unwrap() = None;
         *CACHED.lock().unwrap() = None;
         *STORE_READS.lock().unwrap() = 0;
+        drop_pending();
         guard
     }
 
-    /// Drive the extension's half in-process. The real one runs this in WASM through the same
-    /// `vault_crypto::handshake`, so the protocol under test is the shipped one.
-    fn extension_pairs(code: &str) -> Res<(String, u32, String)> {
-        let kp = handshake::handshake_generate_keypair().map_err(|e| format!("{e:?}"))?;
-        let start = handshake::handshake_enroll_initiator(kp.private_key.clone(), psk_for(code))
-            .map_err(|e| format!("{e:?}"))?;
-        Ok((kp.public_key, start.session_id, start.message))
+    /// A link both screens confirmed, before the browser has the vault: returns its public key.
+    fn pending_link(root: &Path, label: &str) -> String {
+        // The app's identity exists before any link: accept_link sets it up for the handshake.
+        identity(root).unwrap();
+        let kp = handshake::handshake_generate_keypair().unwrap();
+        finish_link(root, &kp.public_key, label).unwrap();
+        kp.public_key
     }
 
-    /// Run a pairing to completion against the module, returning the extension's public key.
-    fn pair(root: &Path, code: &str, label: &str) -> Res<String> {
-        let (ext_pub, ext_session, msg1) = extension_pairs(code)?;
-        let hs = accept_pairing(root, label)?;
-        let msg2 = read_message(root, &hs, &msg1)?
-            .message
-            .ok_or("expected msg2")?;
-        let msg3 = handshake::handshake_read(ext_session, msg2)
-            .map_err(|e| format!("{e:?}"))?
-            .message
-            .ok_or("expected msg3")?;
-        read_message(root, &hs, &msg3)?;
-        close(&hs);
-        handshake::handshake_close(ext_session);
-        Ok(ext_pub)
+    /// Link a browser the way a whole pairing ends, returning its public key.
+    fn link(root: &Path, label: &str) -> String {
+        let key = pending_link(root, label);
+        assert!(complete_link(root, &key).unwrap());
+        key
     }
 
     #[test]
@@ -629,83 +845,24 @@ mod tests {
     }
 
     #[test]
-    fn pairing_allowlists_the_peer() {
+    fn a_confirmed_link_allowlists_the_browser() {
         let _g = setup();
         let d = root();
-        let code = begin_pairing().unwrap();
-        let ext_pub = pair(d.path(), &code, "chrome-extension://abc").unwrap();
+        let ext_pub = link(d.path(), "Chrome on Mac");
 
         let peers = paired_peers(d.path()).unwrap();
         assert_eq!(peers.len(), 1);
         assert_eq!(peers[0].public_key, ext_pub);
-        assert_eq!(peers[0].label, "chrome-extension://abc");
+        assert_eq!(peers[0].label, "Chrome on Mac");
     }
 
     #[test]
-    fn a_wrong_code_never_completes() {
+    fn a_linked_browser_reconnects() {
         let _g = setup();
         let d = root();
-        begin_pairing().unwrap();
-        // The attacker guesses. XXpsk3 mixes the PSK in, so this fails inside the AEAD
-        // rather than at any check of ours.
-        assert!(pair(d.path(), "WRONGCOD", "chrome-extension://evil").is_err());
-        assert!(paired_peers(d.path()).unwrap().is_empty());
-    }
+        let ext_pub = link(d.path(), "chrome");
 
-    #[test]
-    fn no_pairing_window_means_no_pairing() {
-        let _g = setup();
-        let d = root();
-        cancel_pairing();
-        // A process connecting while the user is not pairing gets nowhere, whatever it claims.
-        assert!(accept_pairing(d.path(), "chrome-extension://evil").is_err());
-    }
-
-    #[test]
-    fn the_code_is_single_use() {
-        let _g = setup();
-        let d = root();
-        let code = begin_pairing().unwrap();
-        pair(d.path(), &code, "first").unwrap();
-        // Completion closed the window, so the same code cannot pair a second browser.
-        assert!(!pairing_open());
-        assert!(accept_pairing(d.path(), "second").is_err());
-        assert_eq!(paired_peers(d.path()).unwrap().len(), 1);
-    }
-
-    #[test]
-    fn the_code_burns_after_repeated_failures() {
-        let _g = setup();
-        let d = root();
-        begin_pairing().unwrap();
-        for _ in 0..MAX_ATTEMPTS {
-            let _ = accept_pairing(d.path(), "guesser");
-        }
-        assert!(!pairing_open(), "code should be spent");
-        assert!(accept_pairing(d.path(), "guesser").is_err());
-    }
-
-    #[test]
-    fn an_expired_code_is_refused() {
-        let _g = setup();
-        let d = root();
-        let code = begin_pairing().unwrap();
-        // Reach in and age it, rather than sleeping out a three-minute TTL.
-        PENDING.lock().unwrap().as_mut().unwrap().expires_at = now_ms() - 1;
-        assert!(!pairing_open());
-        assert!(pair(d.path(), &code, "late").is_err());
-        assert!(paired_peers(d.path()).unwrap().is_empty());
-    }
-
-    #[test]
-    fn a_paired_peer_reconnects_without_a_code() {
-        let _g = setup();
-        let d = root();
-        let code = begin_pairing().unwrap();
-        let ext_pub = pair(d.path(), &code, "chrome").unwrap();
-
-        // No pairing window open: this is the everyday path.
-        assert!(!pairing_open());
+        // No dialog open: this is the everyday path.
         let hs = accept_known(d.path(), &ext_pub).unwrap();
         close(&hs);
     }
@@ -722,8 +879,7 @@ mod tests {
     fn forgetting_a_peer_revokes_it() {
         let _g = setup();
         let d = root();
-        let code = begin_pairing().unwrap();
-        let ext_pub = pair(d.path(), &code, "chrome").unwrap();
+        let ext_pub = link(d.path(), "chrome");
 
         assert!(forget_peer(d.path(), &ext_pub).unwrap());
         assert!(accept_known(d.path(), &ext_pub).is_err());
@@ -788,8 +944,7 @@ mod tests {
     fn a_peer_written_into_the_file_is_not_trusted() {
         let _g = setup();
         let d = root();
-        let code = begin_pairing().unwrap();
-        pair(d.path(), &code, "chrome").unwrap();
+        link(d.path(), "chrome");
 
         // Keep the real identity's public key and seal, and append a peer of one's own.
         let rogue = handshake::handshake_generate_keypair().unwrap();
@@ -842,8 +997,8 @@ mod tests {
     fn forgetting_one_browser_keeps_the_others_trusted() {
         let _g = setup();
         let d = root();
-        let first = pair(d.path(), &begin_pairing().unwrap(), "first").unwrap();
-        let second = pair(d.path(), &begin_pairing().unwrap(), "second").unwrap();
+        let first = link(d.path(), "first");
+        let second = link(d.path(), "second");
 
         assert!(forget_peer(d.path(), &first).unwrap());
         assert!(accept_known(d.path(), &first).is_err());
@@ -854,8 +1009,7 @@ mod tests {
     fn an_allowlist_from_another_identity_is_refused() {
         let _g = setup();
         let d = root();
-        let code = begin_pairing().unwrap();
-        pair(d.path(), &code, "chrome").unwrap();
+        link(d.path(), "chrome");
 
         // A restore from another machine: different credential store, same allowlist file.
         // The cache goes too, because this is a scenario a fresh process would meet.
@@ -878,22 +1032,284 @@ mod tests {
         assert!(public_key(d.path()).is_err());
     }
 
-    #[test]
-    fn codes_use_an_unambiguous_alphabet() {
-        let _g = setup();
-        let code = begin_pairing().unwrap();
-        assert_eq!(code.len(), CODE_LEN);
-        assert!(
-            code.chars().all(|c| CODE_ALPHABET.contains(&(c as u8))),
-            "code {code} strayed outside the alphabet"
-        );
+    /// Which vault is open, as the webview records it on unlock.
+    fn open_vault(root: &Path, id: &str) {
+        crate::storage::ops::set_meta(root, "active-vault".into(), serde_json::json!(id)).unwrap();
+    }
+
+    /// The vaults on this device and when each was made, as the webview's registry holds them.
+    fn register(root: &Path, vaults: &[(&str, u64)]) {
+        let records: Vec<_> = vaults
+            .iter()
+            .map(|(id, at)| serde_json::json!({ "id": id, "label": "", "createdAt": at }))
+            .collect();
+        crate::storage::ops::set_meta(
+            root,
+            "vault.registry".into(),
+            serde_json::json!({ "vaults": records }),
+        )
+        .unwrap();
+    }
+
+    /// A browser on the one list an earlier build kept for the whole app, sealed as it sealed it.
+    fn legacy_link(root: &Path, public_key: &str, paired_at: u64) {
+        identity(root).unwrap();
+        let mut file = read_trusted(root).unwrap();
+        file.peers.push(PairedPeer {
+            public_key: public_key.to_string(),
+            label: "legacy".into(),
+            paired_at,
+        });
+        save(root, &mut file).unwrap();
     }
 
     #[test]
-    fn the_psk_is_case_insensitive_but_code_specific() {
-        assert_eq!(psk_for("ABC23456"), psk_for("abc23456"));
-        assert_eq!(psk_for(" ABC23456 "), psk_for("ABC23456"));
-        assert_ne!(psk_for("ABC23456"), psk_for("ABC23457"));
+    fn a_browser_linked_to_one_vault_is_not_admitted_while_another_is_open() {
+        let _g = setup();
+        let d = root();
+        register(d.path(), &[("vault-a", 1), ("vault-b", 1)]);
+        open_vault(d.path(), "vault-a");
+        let browser = link(d.path(), "chrome");
+
+        open_vault(d.path(), "vault-b");
+        assert!(accept_known(d.path(), &browser).is_err());
+        assert!(paired_peers(d.path()).unwrap().is_empty());
+
+        open_vault(d.path(), "vault-a");
+        close(&accept_known(d.path(), &browser).unwrap());
+        assert_eq!(paired_peers(d.path()).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn links_made_before_lists_were_per_vault_go_to_the_vaults_that_existed_then() {
+        let _g = setup();
+        let d = root();
+        let browser = handshake::handshake_generate_keypair().unwrap();
+        legacy_link(d.path(), &browser.public_key, 100);
+        register(d.path(), &[("older", 50), ("newer", 200)]);
+
+        // The file an earlier build sealed still verifies, and the link stays where it worked.
+        open_vault(d.path(), "older");
+        close(&accept_known(d.path(), &browser.public_key).unwrap());
+        // A vault made after the link never had it.
+        open_vault(d.path(), "newer");
+        assert!(accept_known(d.path(), &browser.public_key).is_err());
+        assert!(paired_peers(d.path()).unwrap().is_empty());
+    }
+
+    #[test]
+    fn forgetting_from_a_named_vault_leaves_the_open_one_and_the_others() {
+        let _g = setup();
+        let d = root();
+        let browser = handshake::handshake_generate_keypair().unwrap();
+        legacy_link(d.path(), &browser.public_key, 100);
+        register(d.path(), &[("vault-a", 10), ("vault-b", 20)]);
+        open_vault(d.path(), "vault-a");
+
+        // A removal gossiped to vault-b's session, while vault-a has since opened.
+        assert!(forget_peer_in(d.path(), &browser.public_key, "vault-b").unwrap());
+        close(&accept_known(d.path(), &browser.public_key).unwrap());
+
+        open_vault(d.path(), "vault-b");
+        assert!(accept_known(d.path(), &browser.public_key).is_err());
+        assert!(!forget_peer_in(d.path(), &browser.public_key, "vault-b").unwrap());
+    }
+
+    #[test]
+    fn disconnecting_in_one_vault_keeps_the_link_in_another() {
+        let _g = setup();
+        let d = root();
+        let browser = handshake::handshake_generate_keypair().unwrap();
+        legacy_link(d.path(), &browser.public_key, 100);
+        register(d.path(), &[("vault-a", 10), ("vault-b", 20)]);
+
+        open_vault(d.path(), "vault-b");
+        assert!(forget_peer(d.path(), &browser.public_key).unwrap());
+        assert!(accept_known(d.path(), &browser.public_key).is_err());
+
+        open_vault(d.path(), "vault-a");
+        close(&accept_known(d.path(), &browser.public_key).unwrap());
+    }
+
+    #[test]
+    fn a_browser_written_into_a_vaults_list_is_not_trusted() {
+        let _g = setup();
+        let d = root();
+        register(d.path(), &[("vault-a", 1), ("vault-b", 1)]);
+        open_vault(d.path(), "vault-a");
+        link(d.path(), "chrome");
+
+        let rogue = handshake::handshake_generate_keypair().unwrap();
+        let mut file: serde_json::Value =
+            serde_json::from_slice(&fs::read(path(d.path())).unwrap()).unwrap();
+        file["vaults"]["vault-b"] = serde_json::json!([peer_json(&rogue.public_key)]);
+        fs::write(path(d.path()), file.to_string()).unwrap();
+
+        open_vault(d.path(), "vault-b");
+        assert!(accept_known(d.path(), &rogue.public_key).is_err());
+        // Fail closed, as with the app-wide list: a tampered file vouches for nobody.
+        open_vault(d.path(), "vault-a");
+        assert!(paired_peers(d.path()).unwrap().is_empty());
+    }
+
+    #[test]
+    fn a_confirmed_link_is_admitted_but_not_listed_until_completed() {
+        let _g = setup();
+        let d = root();
+        let browser = pending_link(d.path(), "chrome");
+
+        assert!(admitted(d.path(), &browser));
+        assert!(paired_peers(d.path()).unwrap().is_empty());
+
+        assert!(complete_link(d.path(), &browser).unwrap());
+        assert_eq!(paired_peers(d.path()).unwrap()[0].public_key, browser);
+    }
+
+    #[test]
+    fn completing_with_another_key_lists_nothing() {
+        let _g = setup();
+        let d = root();
+        let browser = pending_link(d.path(), "chrome");
+
+        assert!(!complete_link(d.path(), "someone-else").unwrap());
+        assert!(paired_peers(d.path()).unwrap().is_empty());
+        assert!(admitted(d.path(), &browser));
+    }
+
+    #[test]
+    fn a_dropped_pending_link_is_refused() {
+        let _g = setup();
+        let d = root();
+        let browser = pending_link(d.path(), "chrome");
+
+        drop_pending();
+
+        assert!(!admitted(d.path(), &browser));
+        assert_eq!(refusal(d.path(), &browser), UNLINKED);
+        assert!(!complete_link(d.path(), &browser).unwrap());
+    }
+
+    #[test]
+    fn a_pending_link_expires() {
+        let _g = setup();
+        let d = root();
+        let browser = pending_link(d.path(), "chrome");
+
+        PENDING.lock().unwrap().as_mut().unwrap().expires_at = 0;
+
+        assert!(!admitted(d.path(), &browser));
+        assert!(!complete_link(d.path(), &browser).unwrap());
+    }
+
+    #[test]
+    fn a_browser_on_another_vaults_list_is_told_not_linked_and_a_removed_one_unlinked() {
+        let _g = setup();
+        let d = root();
+        register(d.path(), &[("vault-a", 1), ("vault-b", 1)]);
+        open_vault(d.path(), "vault-a");
+        let browser = link(d.path(), "chrome");
+
+        // Another vault open: it is still linked, to a vault that is not open now.
+        open_vault(d.path(), "vault-b");
+        assert_eq!(refusal(d.path(), &browser), NOT_LINKED);
+
+        // Removed from the only vault it was on: linked to nothing here.
+        open_vault(d.path(), "vault-a");
+        assert!(forget_peer(d.path(), &browser).unwrap());
+        assert_eq!(refusal(d.path(), &browser), UNLINKED);
+    }
+
+    #[test]
+    fn an_old_link_is_pinned_to_the_vault_it_syncs_with() {
+        let _g = setup();
+        let d = root();
+        let browser = handshake::handshake_generate_keypair().unwrap();
+        let other = handshake::handshake_generate_keypair().unwrap();
+        legacy_link(d.path(), &browser.public_key, 100);
+        legacy_link(d.path(), &other.public_key, 100);
+        register(d.path(), &[("vault-a", 10), ("vault-b", 20)]);
+
+        open_vault(d.path(), "vault-a");
+        assert!(pin_link(d.path(), &browser.public_key, "vault-a").unwrap());
+        assert!(admitted(d.path(), &browser.public_key));
+
+        // The other vault no longer takes it, and still takes the other old links.
+        open_vault(d.path(), "vault-b");
+        assert!(!admitted(d.path(), &browser.public_key));
+        assert!(admitted(d.path(), &other.public_key));
+    }
+
+    #[test]
+    fn a_new_link_is_never_pinned() {
+        let _g = setup();
+        let d = root();
+        register(d.path(), &[("vault-a", 1), ("vault-b", 1)]);
+        open_vault(d.path(), "vault-a");
+        let browser = link(d.path(), "chrome");
+        let before = fs::read(path(d.path())).unwrap();
+
+        assert!(!pin_link(d.path(), &browser, "vault-a").unwrap());
+        assert_eq!(fs::read(path(d.path())).unwrap(), before);
+    }
+
+    #[test]
+    fn an_old_link_is_pinned_to_the_vault_whose_sync_passed_not_the_one_open_now() {
+        // The roster check can finish after the app has moved to another vault.
+        let _g = setup();
+        let d = root();
+        let browser = handshake::handshake_generate_keypair().unwrap();
+        legacy_link(d.path(), &browser.public_key, 100);
+        register(d.path(), &[("vault-a", 10), ("vault-b", 20)]);
+
+        open_vault(d.path(), "vault-b");
+        assert!(pin_link(d.path(), &browser.public_key, "vault-a").unwrap());
+
+        assert!(!admitted(d.path(), &browser.public_key));
+        open_vault(d.path(), "vault-a");
+        assert!(admitted(d.path(), &browser.public_key));
+    }
+
+    #[test]
+    fn a_tampered_file_tells_a_browser_another_vault_is_open_not_that_it_is_unlinked() {
+        // Not trusting the file is unsure, not proof: no browser may drop its link over it.
+        let _g = setup();
+        let d = root();
+        let browser = link(d.path(), "chrome");
+        let rogue = handshake::handshake_generate_keypair().unwrap();
+        let mut file: serde_json::Value =
+            serde_json::from_slice(&fs::read(path(d.path())).unwrap()).unwrap();
+        file["peers"]
+            .as_array_mut()
+            .unwrap()
+            .push(peer_json(&rogue.public_key));
+        fs::write(path(d.path()), file.to_string()).unwrap();
+
+        assert!(!admitted(d.path(), &browser));
+        assert_eq!(refusal(d.path(), &browser), NOT_LINKED);
+    }
+
+    #[test]
+    fn a_pending_link_is_dropped_only_for_its_own_browser() {
+        let _g = setup();
+        let d = root();
+        let browser = pending_link(d.path(), "chrome");
+
+        assert!(!drop_pending_for("someone-else"));
+        assert!(admitted(d.path(), &browser));
+        assert!(drop_pending_for(&browser));
+        assert!(!admitted(d.path(), &browser));
+    }
+
+    #[test]
+    fn with_several_vaults_and_none_open_nobody_is_admitted() {
+        let _g = setup();
+        let d = root();
+        let browser = handshake::handshake_generate_keypair().unwrap();
+        legacy_link(d.path(), &browser.public_key, 100);
+        register(d.path(), &[("vault-a", 10), ("vault-b", 20)]);
+
+        assert!(accept_known(d.path(), &browser.public_key).is_err());
+        assert!(paired_peers(d.path()).unwrap().is_empty());
     }
 }
 
@@ -903,25 +1319,6 @@ use tauri::AppHandle;
 
 use crate::storage::data_dir;
 
-/// Open a pairing window and hand back the code to display. The code is a bearer secret for
-/// its lifetime, so the UI must show it and nothing else must log it.
-#[tauri::command]
-pub fn pairing_begin() -> Result<String, String> {
-    begin_pairing()
-}
-
-/// Called when the user closes the pairing dialog. Not merely tidiness: an abandoned code
-/// that stayed live would be a usable secret nobody is watching.
-#[tauri::command]
-pub fn pairing_cancel() {
-    cancel_pairing();
-}
-
-#[tauri::command]
-pub fn pairing_is_open() -> bool {
-    pairing_open()
-}
-
 #[tauri::command]
 pub fn pairing_list(app: AppHandle) -> Result<Vec<PairedPeer>, String> {
     paired_peers(&data_dir(&app)?)
@@ -929,7 +1326,31 @@ pub fn pairing_list(app: AppHandle) -> Result<Vec<PairedPeer>, String> {
 
 #[tauri::command]
 pub fn pairing_forget(app: AppHandle, public_key: String) -> Result<bool, String> {
-    forget_peer(&data_dir(&app)?, &public_key)
+    let root = data_dir(&app)?;
+    let removed = forget_peer(&root, &public_key)?;
+    // Its open connection goes now, so it learns at once rather than on its next frame.
+    crate::socket::vault_opened(&root);
+    Ok(removed)
+}
+
+/// End a browser's link to `vault_id` because it was removed from that vault's sync group.
+#[tauri::command]
+pub fn pairing_forget_in_vault(
+    app: AppHandle,
+    public_key: String,
+    vault_id: String,
+) -> Result<bool, String> {
+    let root = data_dir(&app)?;
+    let removed = forget_peer_in(&root, &public_key, &vault_id)?;
+    crate::socket::vault_opened(&root);
+    Ok(removed)
+}
+
+/// Pin an old app-wide link to the vault open now (`pin_link`), once that browser has passed
+/// sync's check over the link.
+#[tauri::command]
+pub fn pairing_pin_link(app: AppHandle, public_key: String, vault_id: String) -> Result<bool, String> {
+    pin_link(&data_dir(&app)?, &public_key, &vault_id)
 }
 
 /// This device's static public key, for showing the user which identity a browser paired to.

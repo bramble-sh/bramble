@@ -5,6 +5,7 @@ import type { OptionsScreen, PopOutHandoff, ShellAdapter } from "@core/adapters/
 import type { Target } from "@core/flags";
 import { loginHosts } from "@core/vault/autofill-index";
 import { setWebauthnInterceptionPauser, setWebauthnRpId } from "@core/vault/webauthn-ceremony";
+import { reconcileDefaultPasswordManager, setDefaultPasswordManager } from "./browser-saving";
 import { effectivePort, hostnameMatches } from "./dedupe";
 import { api } from "./platform-api";
 import { ACTIVE_VAULT_SESSION_KEY } from "./session-keys";
@@ -177,7 +178,11 @@ export const extensionShell: ShellAdapter = {
 		return res?.data ?? null;
 	},
 	async reportPasskeyVerification(id: string, verified: boolean) {
-		await api.runtime.sendMessage({ type: "PASSKEY_VERIFY_RESULT", payload: { id, verified } });
+		const res = (await api.runtime.sendMessage({
+			type: "PASSKEY_VERIFY_RESULT",
+			payload: { id, verified },
+		})) as { data?: { signInAgain?: boolean } } | undefined;
+		return { signInAgain: res?.data?.signInAgain === true };
 	},
 	persistRoute(path: string) {
 		// Direct session-storage write from the popup context (no gesture, no background
@@ -209,8 +214,16 @@ export const extensionShell: ShellAdapter = {
 		if (!res) throw new Error("No response from Bramble's background (reload the extension?).");
 		if (!res.ok) throw new Error(res.error ?? "Sign-in failed.");
 	},
+	getDefaultPasswordManager: reconcileDefaultPasswordManager,
+	setDefaultPasswordManager,
 	async setAutofillEnabled(enabled: boolean) {
 		await api.runtime.sendMessage({ type: "AUTOFILL_SET_ENABLED", payload: { enabled } });
+	},
+	async launchLogin(entryId: string, url: string) {
+		const res = (await api.runtime
+			.sendMessage({ type: "AUTOFILL_LAUNCH", payload: { entryId, url } })
+			.catch(() => undefined)) as { ok?: boolean } | undefined;
+		if (!res?.ok) window.open(url, "_blank", "noopener,noreferrer");
 	},
 	// Reports failure, unlike setAutofillEnabled above: turning this on can genuinely fail
 	// (another extension holds the WebAuthn proxy), and a switch that says "on" while nothing is
@@ -271,14 +284,21 @@ export const extensionShell: ShellAdapter = {
 		const parsed = PendingEnrollApprovalSchema.safeParse(res.data ?? null);
 		return parsed.success ? parsed.data : null;
 	},
-	onSyncStatus(callback: (status: string) => void) {
+	onSyncStatus(callback: (status: string, at: number) => void) {
 		const handler = (msg: { type?: string; payload?: unknown } | undefined) => {
 			if (msg?.type !== "SYNC_STATUS") return;
 			const parsed = SyncStatusMsgSchema.safeParse(msg.payload);
-			if (parsed.success) callback(parsed.data.status);
+			if (parsed.success) callback(parsed.data.status, parsed.data.at ?? Date.now());
 		};
 		api.runtime.onMessage.addListener(handler);
 		return () => api.runtime.onMessage.removeListener(handler);
+	},
+	async syncNow() {
+		const res = (await api.runtime.sendMessage({ type: "SYNC_RESTART" })) as
+			| { ok: boolean; error?: string }
+			| undefined;
+		if (!res) throw new Error("no response from sync host (reload the extension?)");
+		if (!res.ok) throw new Error(res.error ?? "sync host error");
 	},
 	async syncDevicePublicKey() {
 		const res = (await api.runtime.sendMessage({ type: "SYNC_DEVICE_PUBKEY" })) as

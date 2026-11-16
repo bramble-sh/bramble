@@ -1,14 +1,11 @@
 Neu in dieser Version:
 
-- In Bramble gespeicherte Passkeys funktionieren jetzt auf Websites, die sie zum Schutz Ihrer Daten verwenden (iOS 18 oder neuer).
-- Der Import aus Proton Pass übernimmt jetzt Ihre Passkeys, Dateien und alle Websites, und der Import aus 1Password übernimmt Ihre Dateien. Die Importvorschau zählt Anhänge, bevor Sie beginnen.
-- E-Mail-Aliase mit Fastmail Masked Email erstellen.
-- Die Websites eines Logins werden jetzt zusammen unter einem Label aufgeführt.
-- Anmeldedaten, deren Website ohne „https://“ gespeichert wurde, z. B. nas.local:5000, werden jetzt automatisch ausgefüllt und ihre Passkeys werden gefunden.
-- Der Import aus Apple Passwords behält die Datumsangaben jedes Eintrags bei, und der Übertragungsbildschirm nennt jetzt Bramble.
-- Beim Erstellen mehrerer Passkeys hintereinander geht keiner mehr verloren, und ein Passkey wird nur auf seiner eigenen Website angeboten.
-- Das Speichern bleibt nicht mehr hängen, wenn Ihre Verbindung Probleme macht, z. B. bei einem VPN in einem schlechten Zustand. Falls ein Speichern einmal zu lange dauert, weist die App darauf hin.
-- Eine Datei, die Sie beim Schließen der App gerade angehängt hatten, verbleibt nicht länger in Ihren Backups.
-- Sicherheitsverbesserungen bei der Synchronisierung.
+- Die Suche durchsucht auch Notizen und zeigt Treffer im Namen zuerst an.
+- Nach dem Sperren der App gelangen Sie beim Entsperren zurück zum vorherigen Bildschirm, inklusive Ihrer Suche und Position in der Liste.
+- Die Tresorliste merkt sich die gewählte Sortierreihenfolge.
+- Das Synchronisierungsprotokoll zeigt, wann jeder Eintrag stattfand und um welches Gerät es sich handelt. Unter „Einstellungen > Synchronisierung“ gibt es die Schaltfläche „Jetzt synchronisieren“.
+- Die App informiert Sie, wenn eine neuere Version verfügbar ist.
+- Die Synchronisierung startet, sobald das erste von Ihnen eingeladene Gerät beitritt.
+- Geräte verbinden sich zuverlässiger für die Synchronisierung.
 
 Kein Konto, keine Cloud. Alles bleibt auf Ihren Geräten.

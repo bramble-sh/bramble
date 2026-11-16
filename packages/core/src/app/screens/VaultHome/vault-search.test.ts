@@ -100,6 +100,14 @@ describe("filterAndSortEntries", () => {
 		expect(names("all")).toEqual(["Bank", "Mail", "Wifi"]);
 	});
 
+	it("counts a reused password as At Risk, not Strong (#210)", () => {
+		const items = [item({ name: "Forum", reused: true }), item({ name: "Mail" })];
+		const names = (health: VaultSearch["health"]) =>
+			filterAndSortEntries(items, search({ health })).map((i) => i.name);
+		expect(names("atRisk")).toEqual(["Forum"]);
+		expect(names("strong")).toEqual(["Mail"]);
+	});
+
 	it("filters by tag when the query carries a #token", () => {
 		const items = [
 			item({ name: "Payroll", tagKeys: ["work"], searchText: "payroll" }),
@@ -210,6 +218,31 @@ describe("filterAndSortEntries", () => {
 				(i) => i.name,
 			),
 		).toEqual(["Gitea", "GitHub", "GitLab"]);
+	});
+
+	const tiered = (name: string, identity: string, notes: string) =>
+		item({
+			name,
+			searchText: `${name} ${identity} ${notes}`.toLowerCase(),
+			searchTiers: [name.toLowerCase(), identity, notes],
+		});
+
+	it("ranks a name match first, then username and the like, then notes", () => {
+		const items = [
+			tiered("Alpha", "", "acme vpn notes"),
+			tiered("Bravo", "ops@acme.io", ""),
+			tiered("Zulu Acme", "", ""),
+		];
+		const names = (q: string) => filterAndSortEntries(items, search({ q })).map((i) => i.name);
+		expect(names("acme")).toEqual(["Zulu Acme", "Bravo", "Alpha"]);
+		// No query, no ranking: the chosen sort alone.
+		expect(names("")).toEqual(["Alpha", "Bravo", "Zulu Acme"]);
+	});
+
+	it("ranks by the weakest place any word is found", () => {
+		const items = [tiered("Acme", "", "vpn"), tiered("Acme VPN", "", "")];
+		const result = filterAndSortEntries(items, search({ q: "acme vpn" }));
+		expect(result.map((i) => i.name)).toEqual(["Acme VPN", "Acme"]);
 	});
 
 	it("ignores an empty matchedIds set", () => {

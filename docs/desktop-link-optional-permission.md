@@ -160,6 +160,20 @@ The app keys its outbound queue by our static key, so a second connection displa
 the target for its pushes and closing the second takes that queue with it, which would leave sync
 quiet with nothing reporting a fault. Lending is only safe when there is nothing to displace.
 
+The emoji link is the exception, and lends unconditionally. It speaks as a key pair made for it, so
+there is nothing of its own to displace, and the background lets go of the link it held before the
+new one is confirmed. Lending it ties the link in progress to the page running its vault copy: when
+the page closes, its pipe goes, and both sides drop the half-made link.
+
+Each lent pipe carries one session. The app reads a connection as one Noise session, so a second
+`hello` on a pipe already in use arrives where it expects a sealed frame, and the app drops the
+connection. The page names each relay port `link-native-proxy:<id>` and sends that id as `via`
+with the one request it lent the pipe for; the background takes the port out of its map when that
+session starts. Nothing else can ride it, including background-initiated asks such as sync's
+`desktopSyncKey`. This used to be one global port: Settings asked for the app's sync key while the
+link flow asked for its vault summary, both rode the same pipe, and the invite claim that followed
+answered "no invite".
+
 Step 5 is the only architectural move, and the smallest one that works. The obvious reading of
 finding 1 is "pairing must move to the page", which would mean a second copy of the Noise handshake
 living next to the first and drifting from it. It does not have to. Only the TRANSPORT is
@@ -178,7 +192,55 @@ the page asks to pair, because a pair request that overtakes its own transport f
 registered, which is a race that only appears on a cold worker.
 
 Everything after pairing stays where it is. Delegation, sync frames and `reportActiveTab` are all
-background-owned and none of them is on a path where a sub-minute delay is visible.
+background-owned and almost none of them is on a path where a sub-minute delay is visible. The
+exception is the vault copy, which rides the held link the moment linking ends
+([desktop-link-onboarding.md](desktop-link-onboarding.md)). So once both screens confirm, the
+link's own connection stays open as the held link instead of being closed and reopened over KK.
+That connection is the pipe the page lent, kept until the page closes. Then a worker with the
+binding opens one of its own at once, and one without opens it at its next start.
+
+**That next start has to actually happen.** Chromium replaces a worker only after 30 idle seconds,
+and any event or API call resets the timer. So once the lent pipe has gone, a worker without the
+binding gets out of the way:
+
+- It stops its keepalive. Each tick reads storage and checks the permission, both API calls, so
+  this alone once kept the worker, and so the link, down until the browser restarted.
+- It tells sync the link has gone (`LINK_DOWN`), and sync drops the app at once, rather than reading
+  the vault from this worker every 4 seconds until the peer times out. The file session stops
+  sending too, instead of heartbeating every 30 seconds, the same length as the idle limit, and a
+  send that fails ends its stream anyway. The app pokes when it is back. The browser remembers the
+  app's sync key per link (`linkAppSyncKey:<link's public key>`), so with the pipe down the relay
+  still knows the app and skips it, instead of a handshake the app refuses on every announce.
+- It sets one alarm, `desktop-link-wake`, every 63 seconds until a worker can open a pipe. An app
+  cannot reach a browser that holds no pipe, so nothing else is sure to wake the next worker. Chromium
+  stops an idle worker 30 to 60 seconds after its last event, so a fire any sooner could only wake
+  this one again. Set once per worker, because creating it again puts off its next fire. The fire
+  does nothing itself: a worker's start is what opens the link. It is cleared as soon as no later
+  worker could do better: nothing left to link, or the permission taken away.
+
+Measured in real Chromium, the link is back about 60 seconds after the page closes, with nothing for
+the user to do (`e2e/desktop-link/worker-restart.spec.ts`). That is close to the floor. The offscreen
+document cannot help: it has no `connectNative`, and neither does an extension iframe inside it
+(checked in Chromium 151), so only a full page or the worker can hold a pipe.
+
+**A window that is open carries the link in the meantime.** Someone who opens one is looking now, so
+each extension page asks on load whether the worker wants a pipe (`DESKTOP_LINK_PIPE_WANTED`), and
+lends one if so. The worker also says when it loses the one it had (`DESKTOP_LINK_PIPE_LOST`), so
+another open page can take over. Only a worker that cannot open a pipe ever wants one, so this can
+never displace a connection a worker holds itself. A request on a pipe of its own finishes before
+the held link connects, since the app keys a browser's pushes by its static key and that request
+would otherwise take them and close.
+
+While a lent pipe carries the link, the link is up: `openDesktopLink` says so and tells nobody
+otherwise. Reporting `LINK_DOWN` then would drop the peer in mid-handshake, and each end would wait
+for the other to speak. A pipe the worker stops holding (the link was disconnected, or another vault
+opened) is released by the page when the worker asks, since the page owns the native port and an open
+pipe reads as connected to the app. The pipe an emoji link runs on is kept apart from the lent one,
+so neither closes the other.
+
+Two things can hold the worker up: sync with another device carrying on over the relay keeps waking
+it, and **DevTools open on the worker stops it going idle at all**, so a person watching its console
+will not see it replaced. A window opened then still brings the link back.
 
 ## Execution plan
 
@@ -205,7 +267,7 @@ Implement it in the page against `api.permissions`, never dispatched to the back
 `clients/extension/src/background/desktop-link.ts` splits the pipe from the handshake, and
 `ProxiedSession` implements it over a runtime port from the page. `openNativeProxy()` in
 `clients/extension/src/desktop-link.ts` is the page half: native port in, runtime port
-out, no frame ever read. `pairWithDesktop` picks the lent transport when one is registered and a
+out, no frame ever read. `pairWithDesktop` picks the lent transport its request names and a
 direct `NativeSession` otherwise, so a worker that restarted after the grant needs no page at all.
 One state machine, one wire format, nothing to keep in sync.
 
@@ -245,11 +307,13 @@ failure.
 **Phase 6: tests, i18n, docs (done).** Tests landed with the phase that motivated each, rather than
 in a batch at the end, so a failing one names the change that broke it.
 
-- `desktop-link.test.ts` (page): the gate counts both arrays, and the sub-adapter is withheld where
-  the permission is required. One case gives the mock no `connectNative` at all, so any future
-  shortcut through `typeof` throws instead of quietly passing.
+- `desktop-link.test.ts` (page): the gate counts both arrays, the sub-adapter is withheld where
+  the permission is required, and each request lends its own named pipe and names it. One case
+  gives the mock no `connectNative` at all, so any future shortcut through `typeof` throws instead
+  of quietly passing.
 - `background/desktop-link.test.ts`: the lent transport, a content-script port being refused, a
-  window closed mid-handshake, and both unusable-while-paired causes kept apart.
+  window closed mid-handshake, both unusable-while-paired causes kept apart, and one session per
+  lent pipe (two at once, a request it was not lent for, a second session on a used one).
 - `DesktopLinkSection.test.tsx`: ungranted, declined, revoked-while-paired, `drop()` ordering on
   unlink, and a host with no permission to ask for.
 - `e2e/extension/desktop-link-permission.spec.ts`: the shipped ungranted state and the

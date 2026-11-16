@@ -1,0 +1,53 @@
+---
+title: Why does a passkey keep asking for my password?
+description: What to do when a passkey sign-in loops back to Bramble, asks for your master password every time, or fails after you unlock.
+section: passkeys
+kind: question
+order: 1
+keywords:
+  - passkey loop
+  - password prompt loop
+  - passkey keeps asking for master password
+  - asks for password every time
+  - passkey sign-in fails
+  - passkey not working
+  - popup keeps opening
+  - stuck on Confirm it's you
+  - wants to use your passkey. Confirm it's you to continue.
+  - Bramble paused passkey handling to unlock its own vault. Try again.
+  - Incorrect master password
+  - Couldn't verify your key. Try again.
+  - user verification
+  - Confirm passkeys once per unlock
+updatedDate: 2026-11-12
+---
+
+## Check these first
+
+- Bramble is up to date. Find your version in **Settings → About**.
+- Your vault is unlocked before you start. A locked vault asks you to unlock first.
+
+## Bramble keeps opening on Confirm it's you
+
+If Bramble reopens **Confirm it's you** every time you open it after a passkey sign-in, update the extension, then quit and reopen your browser.
+
+## Bramble asks for your master password on every sign-in
+
+Some sites ask Bramble to check it's really you each time you use a passkey. When your vault is already unlocked, Bramble opens **Confirm it's you**, with the site's name and "wants to use your passkey. Confirm it's you to continue."
+
+This is expected. Enter your master password and choose **Confirm**. If your vault has no master password, choose **Use security key**.
+
+If your vault was locked when you started, unlocking counts as that check, so Bramble doesn't ask twice.
+
+To be asked less in the browser extension, open **Settings → General** and turn on **Confirm passkeys once per unlock**. Unlocking then counts as confirming it's you until your vault locks.
+
+To unlock less often, choose a longer **Auto-lock timeout**. See [How auto-lock works](/docs/auto-lock).
+
+## The sign-in fails after you unlock
+
+In Chrome and other Chromium browsers, unlock Bramble before you sign in, or unlock with your master password in the window that opens. If the site shows an error after you unlock, sign in again. Close any passkey window Chrome opens.
+
+## On your phone
+
+- Sites that check it's really you ask every time, even when autofill is still unlocked.
+- Other sites follow your **Auto-lock timeout**. With **Immediate**, Bramble asks for every passkey sign-in.

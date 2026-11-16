@@ -86,9 +86,11 @@ joining device receives it. The registry label is the cached copy the locked scr
 show.
 
 Label policy: labels are **optional** and **need not be unique** (the id
-disambiguates). A vault with a blank label is displayed as "Vault N" by its position
-in the list, resolved at render time rather than stored, so the fallback stays
-correct as vaults are added and removed.
+disambiguates). A vault with a blank label is displayed as "Vault N", where N is the
+record's `number`: one more than the highest on the device when it was added, and
+never changed after. It used to be the vault's place in the list, so deleting Vault 1
+renamed the rest Vault 1 and Vault 2, and the deleted vault looked like it was still
+there. A registry from before `number` gets the numbers it showed at the time.
 
 ### Per-vault storage keys
 
@@ -231,11 +233,8 @@ A new `VaultRegistryProvider` sits above `VaultProvider` and owns the vault list
   All of it is best-effort (`.catch`): once the blob is erased the delete has to finish,
   so a failing native call can't strand a half-deleted vault. `primaryId` no longer exists.
 
-  Known gap: on Android `KeepUnlockedStore`'s on-disk (Keystore-wrapped) VEK cache survives
-  a delete. There is no `AutofillBridge` plugin on Android to route `clearProviderData` to,
-  and `BiometricVaultPlugin.deleteSecret` clears only that vault's Keystore alias. Smaller
-  than the iOS leak was (Android's service reads the vault file, so the entry data goes with
-  the blob) but it is still key material outliving its vault. Needs a native entry point.
+  On Android `clearProviderData` calls `AutofillBridge.lock`, which deletes the Keystore key
+  wrapping `KeepUnlockedStore`'s VEK cache, so that cache cannot outlive the vault.
 
 ## Restore destination
 
@@ -717,7 +716,7 @@ Each phase is independently shippable.
   Phase 4 first shipped with backup *targets* still device-global (one config backing up
   every vault), which turned out to be wrong in use: configuring Nextcloud in a personal
   vault silently configured a work vault with the same server, credentials and folder
-  ([issue #49](https://github.com/flythenimbus/bramble/issues/49)). Targets are now per
+  ([issue #49](https://github.com/bramble-sh/bramble/issues/49)). Targets are now per
   vault (`backup.targets:<id>`), as this document's key table always said. Consequences:
   - a target created in a vault writes to **exactly** the folder the user typed;
   - targets adopted from the old shared list are marked `sharedFolder` and keep the
@@ -967,7 +966,7 @@ ambient `vcrypto`, because unlock screens only render for the selected vault.
 Per-vault VEK shipped on the extension only; mobile's Rust core stays a process-global
 singleton, so `withVault` is undefined there and the binding at `useVault.createVault` is a
 silent no-op. That left mobile with the original hazard, and it reached a user:
-[#27](https://github.com/flythenimbus/bramble/issues/27) — a synced vault that no longer
+[#27](https://github.com/bramble-sh/bramble/issues/27) — a synced vault that no longer
 opens under **either** the master password or the recovery code, failing with
 `aes decrypt: aead::Error`.
 
@@ -1249,7 +1248,7 @@ behavior, clobbers included); the fix is real once 3 lands.
 - **Concurrency:** ~~one vault unlocked at a time~~ **superseded (2026-07): independent
   per-vault unlock on the extension via a VEK map; mobile stays single-active. See
   [Per-vault VEK](#per-vault-vek).**
-- **Labels:** optional; duplicates allowed; blank displays as "Vault N" by position;
+- **Labels:** optional; duplicates allowed; blank displays as "Vault N" (a stored number);
   shown in the pre-unlock picker.
 - **Sync:** active-vault-only in v1.
 - **Primary vault:** ~~unified. One pointer drives mobile autofill, biometric unlock,
@@ -1383,3 +1382,30 @@ hardening), and full multi-vault autofill Tier 2 (search all vaults; post-v1). D
   vault without unlocking, unlike a sync merge).
 - The Rust core and the VLT1 format (no change; a vault stays one blob = one slot set
   + one entries list).
+
+## Two windows
+
+Each open extension window (the toolbar popup, a Settings window, an options tab) holds the vault in
+its own memory and writes the whole vault from there. With nothing more, a window that missed another
+window's save would write over it, and a deleted login would come back.
+
+Two things stop that. After a save, a window tells the others on the same vault (`notifyExternalChange`,
+the same message background writers send), and they reload. And a window's state remembers the entries
+ciphertext it came from (`diskSeen` on `VaultEntries`). If the disk holds anything else when it saves, it
+merges with the disk using the same merge sync uses, then reloads. A plain save with nothing else having
+written is what it always was, plus one read to compare.
+
+`diskSeen` belongs to the state, not the window: a write compares the snapshot it is writing, so a reload
+landing during it can't vouch for that snapshot. After a merge it is null until the reload lands, so any
+further save merges too. The reload is asked for after the write's last await, and if it still lands before
+the caller commits, the commit brings back null, and the next save merges. A reload that was under way when
+the vault closes or changes is dropped.
+
+Tracked only where `notifyExternalChange` exists, which is the extension. Desktop and mobile have one UI
+context, and each save there would pay for the reads.
+
+Limits, both small: the gap between comparing with the disk and writing it is a few milliseconds wide, so
+two saves landing inside it can lose one. And every window on a device shares one sync identity, so the
+same entry edited in two windows at once is not seen as a conflict: the later save wins, as a later edit on
+one device always has. Saving in two windows at the same millisecond needs two hands; the second limit is the
+one a person could meet.

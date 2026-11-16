@@ -1,6 +1,12 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { identityWasm, peerPipe, rosterOf } from "../../test/transport-fakes";
-import { decodeRoster, encodeRoster, type RosterEntry, type RosterPayload } from "..";
+import {
+	decodeRoster,
+	encodeRoster,
+	mergeRemoteRoster,
+	type RosterEntry,
+	type RosterPayload,
+} from "..";
 import type { Channel } from "./channel";
 import type { PeerSession } from "./mesh";
 import { currentRoster } from "./peer-auth";
@@ -290,6 +296,151 @@ describe("verifyRosterEnvelope (the local roster it judges admissions against)",
 	});
 });
 
+describe("one envelope that carries both a voucher and who it vouches for", () => {
+	// An inviter publishes its admission key when it invites, so a device that was away meets that
+	// key and the new device in the same envelope, and the sender then has no reason to send it again
+	// for 10 minutes. A phone isn't open that long, so the new device stayed shut out (issue #205).
+	const sessions: MeshSession[] = [];
+	afterEach(() => {
+		for (const s of sessions.splice(0)) s.stop();
+	});
+
+	/** Signatures that verify only under the key that made them. */
+	const verifyingWasm = () => ({
+		...identityWasm(),
+		roster_verify: vi.fn(async (key: string, _message: string, sig: string) => sig === `by:${key}`),
+	});
+	const device = (
+		id: string,
+		publicKey: string,
+		wall: number,
+		extra: Partial<RosterEntry> = {},
+	): RosterEntry => ({
+		id,
+		publicKey,
+		label: id,
+		addedAt: 0,
+		hlc: { wall, counter: 0, node: id },
+		sigKey: `sk-${id}`,
+		sig: `by:sk-${id}`,
+		...extra,
+	});
+	const self = device("me", "aaaa", 1);
+	const inviterBefore = device("inviter", "bbbb", 1);
+	const inviter = device("inviter", "bbbb", 2, { admissionKey: "adm-inviter" });
+	const admittedBy = (by: string, key: string) => ({ admission: { by, sig: `by:${key}` } });
+
+	/** A device holding `local` receives `gossip` once from a real session. Returns what it stored. */
+	async function receive(local: RosterPayload, gossip: RosterPayload) {
+		let stored = local;
+		const wasm = verifyingWasm();
+		const { a, b } = peerPipe();
+		const base = {
+			relayUrl: "wss://relay.invalid",
+			groupKeyB64: "unused",
+			report: () => {},
+			fetchLocalPayload: async () => "",
+			pushRemotePayload: async () => {},
+		};
+		sessions.push(
+			await startRosterSync({
+				...base,
+				devicePrivB64: "priv-aaaa",
+				devicePubB64: "aaaa",
+				roster: local,
+				wasm: wasm as unknown as RosterSyncWasm,
+				fetchLocalRoster: async () => encodeRoster(stored),
+				pushRemoteRoster: async (json) => {
+					stored = mergeRemoteRoster(stored, decodeRoster(json));
+				},
+				peerSource: async ({ onPeer }) => {
+					onPeer(a);
+					return { stop() {} };
+				},
+			}),
+			await startRosterSync({
+				...base,
+				devicePrivB64: "priv-bbbb",
+				devicePubB64: "bbbb",
+				roster: gossip,
+				wasm: identityWasm(),
+				fetchLocalRoster: async () => encodeRoster(gossip),
+				peerSource: async ({ onPeer }) => {
+					onPeer(b);
+					return { stop() {} };
+				},
+			}),
+		);
+		return { ids: () => stored.devices.map((d) => d.id), wasm, stored: () => stored };
+	}
+
+	it("lets a new device in on the admission key that arrived with it", async () => {
+		const phone = device("phone", "cccc", 3, admittedBy("inviter", "adm-inviter"));
+
+		const { ids } = await receive(
+			{ devices: [self, inviterBefore], revoked: [] },
+			{ devices: [self, inviter, phone], revoked: [] },
+		);
+
+		await vi.waitFor(() => expect(ids()).toContain("phone"));
+	});
+
+	it("follows a chain of devices that each admitted the next", async () => {
+		const tablet = device("tablet", "dddd", 3, {
+			admissionKey: "adm-tablet",
+			...admittedBy("inviter", "adm-inviter"),
+		});
+		const phone = device("phone", "cccc", 4, admittedBy("tablet", "adm-tablet"));
+
+		const { ids } = await receive(
+			{ devices: [self, inviterBefore], revoked: [] },
+			{ devices: [self, inviter, tablet, phone], revoked: [] },
+		);
+
+		await vi.waitFor(() => expect(ids()).toEqual(expect.arrayContaining(["tablet", "phone"])));
+	});
+
+	it("won't take an admission key from an update that fails its own signature", async () => {
+		const forged = { ...inviter, sig: "by:someone-else" };
+		const phone = device("phone", "cccc", 3, admittedBy("inviter", "adm-inviter"));
+
+		const { ids, stored, wasm } = await receive(
+			{ devices: [self, inviterBefore], revoked: [] },
+			{ devices: [self, forged, phone], revoked: [] },
+		);
+
+		await vi.waitFor(() => expect(wasm.roster_verify).toHaveBeenCalled());
+		await new Promise((r) => setTimeout(r, 30));
+		expect(ids()).not.toContain("phone");
+		expect(stored().devices.find((d) => d.id === "inviter")?.admissionKey).toBeUndefined();
+	});
+
+	it("stops looking again once a pass lets nobody new in", async () => {
+		const stranger = device("stranger", "eeee", 3, admittedBy("nobody", "adm-nobody"));
+		const roster = { devices: [self, inviter, stranger], revoked: [] };
+
+		const { ids, wasm } = await receive({ devices: [self, inviter], revoked: [] }, roster);
+
+		await vi.waitFor(() => expect(wasm.roster_verify).toHaveBeenCalled());
+		await new Promise((r) => setTimeout(r, 30));
+		expect(ids()).not.toContain("stranger");
+		// Two passes over three self-signatures: the one that was refused, and the look that found
+		// nothing had changed.
+		expect(wasm.roster_verify.mock.calls.length).toBeLessThanOrEqual(6);
+	});
+
+	it("looks once when nothing was refused", async () => {
+		const { wasm } = await receive(
+			{ devices: [self, inviter], revoked: [] },
+			{ devices: [self, inviter], revoked: [] },
+		);
+
+		await vi.waitFor(() => expect(wasm.roster_verify).toHaveBeenCalled());
+		await new Promise((r) => setTimeout(r, 30));
+		expect(wasm.roster_verify).toHaveBeenCalledTimes(2);
+	});
+});
+
 describe("reapRevoked", () => {
 	it("closes and drops a peer no longer in the current roster; keeps active members", () => {
 		const revokedClose = vi.fn();
@@ -357,6 +508,134 @@ describe("what each tick sends", () => {
 	afterEach(() => {
 		for (const s of sessions.splice(0)) s.stop();
 		vi.useRealTimers();
+	});
+
+	it("reports each peer it authenticates", async () => {
+		const ab = pipe("aaaa", "bbbb");
+		await device("aaaa", [ab.aaaa!], { payload: "a" });
+		const authed: string[] = [];
+		sessions.push(
+			await startRosterSync({
+				relayUrl: "wss://relay.invalid",
+				groupKeyB64: "unused",
+				devicePrivB64: "priv-bbbb",
+				devicePubB64: "bbbb",
+				roster: rosterOf(["aaaa", "bbbb", "cccc"]),
+				wasm: identityWasm(),
+				report: () => {},
+				fetchLocalPayload: async () => "b",
+				pushRemotePayload: async () => {},
+				peerSource: async ({ onPeer }) => {
+					onPeer(ab.bbbb!);
+					return { stop() {} };
+				},
+				onAuthenticated: (pub) => authed.push(pub),
+			}),
+		);
+		await vi.advanceTimersByTimeAsync(0);
+		expect(authed).toEqual(["aaaa"]);
+	});
+
+	it("drops a peer whose source says it has gone, and stops reading the vault for it", async () => {
+		// Each read reaches the extension's worker, and that worker must go idle to be replaced.
+		const ab = pipe("aaaa", "bbbb");
+		await device("aaaa", [ab.aaaa!], { payload: "a" });
+		let gone: () => void = () => {};
+		let reads = 0;
+		let closes = 0;
+		sessions.push(
+			await startRosterSync({
+				relayUrl: "wss://relay.invalid",
+				groupKeyB64: "unused",
+				devicePrivB64: "priv-bbbb",
+				devicePubB64: "bbbb",
+				roster: rosterOf(["aaaa", "bbbb", "cccc"]),
+				wasm: identityWasm(),
+				report: () => {},
+				fetchLocalPayload: async () => {
+					reads++;
+					return "b";
+				},
+				pushRemotePayload: async () => {},
+				peerSource: async ({ onPeer }) => {
+					onPeer({
+						...ab.bbbb!,
+						close: () => {
+							closes++;
+						},
+						onGone: (cb) => {
+							gone = cb;
+						},
+					});
+					return { stop() {} };
+				},
+			}),
+		);
+		await vi.advanceTimersByTimeAsync(TICK);
+		expect(reads).toBeGreaterThan(0);
+
+		gone();
+		const before = reads;
+		await vi.advanceTimersByTimeAsync(TICK * 3);
+
+		expect(reads).toBe(before);
+		expect(closes).toBe(1);
+	});
+
+	it("says which session each peer authenticated on", async () => {
+		// Over the desktop link the session is named by the browser's link key, not its roster key:
+		// the desktop pins an old link to the vault the browser just proved it is in.
+		const ab = pipe("aaaa", "bbbb");
+		await device("aaaa", [ab.aaaa!], { payload: "a" });
+		const authed: [string, string][] = [];
+		sessions.push(
+			await startRosterSync({
+				relayUrl: "wss://relay.invalid",
+				groupKeyB64: "unused",
+				devicePrivB64: "priv-bbbb",
+				devicePubB64: "bbbb",
+				roster: rosterOf(["aaaa", "bbbb", "cccc"]),
+				wasm: identityWasm(),
+				report: () => {},
+				fetchLocalPayload: async () => "b",
+				pushRemotePayload: async () => {},
+				peerSource: async ({ onPeer }) => {
+					onPeer({ ...ab.bbbb!, remotePubkey: "link-key-of-aaaa" });
+					return { stop() {} };
+				},
+				onAuthenticated: (pub, remote) => authed.push([pub, remote]),
+			}),
+		);
+		await vi.advanceTimersByTimeAsync(0);
+		expect(authed).toEqual([["aaaa", "link-key-of-aaaa"]]);
+	});
+
+	it("ignores skipPeer over a local peer source", async () => {
+		const ab = pipe("aaaa", "bbbb");
+		await device("aaaa", [ab.aaaa!], { payload: "from-a" });
+		const got: string[] = [];
+		sessions.push(
+			await startRosterSync({
+				relayUrl: "wss://relay.invalid",
+				groupKeyB64: "unused",
+				devicePrivB64: "priv-bbbb",
+				devicePubB64: "bbbb",
+				roster: rosterOf(["aaaa", "bbbb", "cccc"]),
+				wasm: identityWasm(),
+				report: () => {},
+				fetchLocalPayload: async () => "b",
+				pushRemotePayload: async (json) => {
+					got.push(json);
+				},
+				peerSource: async ({ onPeer }) => {
+					onPeer(ab.bbbb!);
+					return { stop() {} };
+				},
+				skipPeer: () => true,
+			}),
+		);
+		await vi.advanceTimersByTimeAsync(0);
+		expect(got).toEqual(["from-a"]);
 	});
 
 	it("sends an unchanged vault once, and keeps the peer with heartbeats", async () => {

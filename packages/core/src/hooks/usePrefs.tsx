@@ -8,11 +8,13 @@ import {
 	useState,
 } from "react";
 import { type AliasConfig, isAliasConfig } from "../aliases";
+import { type AppUpdateState, normalizeAppUpdateState } from "../app/app-update";
 import {
 	freshReviewNudgeState,
 	normalizeReviewNudgeState,
 	type ReviewNudgeState,
 } from "../app/review-nudge";
+import { DEFAULT_SEARCH, isSortKey, type SortKey } from "../app/screens/VaultHome/vault-search";
 import { usePlatform } from "../context/PlatformContext";
 import { syncKeyFor } from "../sync/sync-keys";
 import {
@@ -46,7 +48,11 @@ export const PREF_AUTOFILL_QUICKTYPE = "pref.autofillQuickType";
 // Extension only: act as a WebAuthn passkey provider for other sites. Off by default
 // (attaching the proxy intercepts all browser WebAuthn). See docs/passkey-provider.md.
 export const PREF_PASSKEY_PROVIDER = "pref.passkeyProviderEnabled";
-// Extension only: also lock the vault when the OS screen locks, independent of the timeout.
+// Extension only: an unlocked vault counts as confirming it's you for passkey sign-ins, so a site
+// that checks doesn't ask again until the vault locks. Off by default. Read by the background
+// (webauthn-provider.ts); see docs/passkey-provider.md.
+export const PREF_PASSKEY_CONFIRM_ONCE = "pref.passkeyConfirmOncePerUnlock";
+// Chromium only: also lock the vault when the OS screen locks, independent of the timeout.
 // On by default (a screen-lock is a reasonable security floor); turned off to stay unlocked
 // on a trusted device even under "Never". See issue #6.
 export const PREF_LOCK_ON_SCREEN_LOCK = "pref.lockOnScreenLock";
@@ -57,9 +63,15 @@ const PREF_STATS_COLLAPSED = "pref.statsCollapsed";
 // a backup. Someone who leaves the machine on has a perfectly good reason to decline, and a
 // suggestion that cannot be silenced is a nag. See BackupSection.
 const PREF_AUTOSTART_PROMPT_DISMISSED = "pref.autostartPromptDismissed";
+// Extension only: the vault list's "make Bramble your default password manager" card was
+// waved away (#135). Settings still offers the switch.
+const PREF_DEFAULT_MANAGER_PROMPT_DISMISSED = "pref.defaultManagerPromptDismissed";
 // The password generator's last-used settings, so the field's one-tap regenerate produces what
 // the user picked in the panel rather than a fixed house style.
 const PREF_GENERATOR = "pref.generator";
+// The vault list's last-picked sort order, for when its address names none (a fresh open, or
+// the home button).
+const PREF_VAULT_SORT = "pref.vaultSort";
 // The email alias provider: which service, its settings, and the API key. Synced, so configuring
 // it on one device reaches the others; see docs/synced-settings.md and docs/email-aliases.md.
 export const PREF_ALIAS_PROVIDER = "pref.aliasProvider";
@@ -67,6 +79,10 @@ export const PREF_ALIAS_PROVIDER = "pref.aliasProvider";
 // and deliberately not synced: it describes this install's relationship with its store listing, and
 // a phone and a browser are listed in different stores. See app/review-nudge.ts.
 export const PREF_REVIEW_NUDGE = "pref.reviewNudge";
+// Mobile only: look for a newer version once a day, and what the last look found. See
+// app/app-update.ts. The desktop keeps its own switch in its updater (shell.updates).
+const PREF_UPDATE_CHECK = "pref.updateCheck";
+const PREF_APP_UPDATE = "pref.appUpdate";
 
 export const DEFAULT_AUTOLOCK_MINUTES = 15;
 // Off by default: the breach check is the app's only network egress (k-anonymous
@@ -80,9 +96,13 @@ const DEFAULT_BIOMETRIC_AUTO_PROMPT = false;
 const DEFAULT_BIOMETRIC_PASSCODE_FALLBACK = false;
 const DEFAULT_AUTOFILL_QUICKTYPE = false;
 export const DEFAULT_PASSKEY_PROVIDER = false;
+export const DEFAULT_PASSKEY_CONFIRM_ONCE = false;
 export const DEFAULT_LOCK_ON_SCREEN_LOCK = true;
 const DEFAULT_STATS_COLLAPSED = false;
 const DEFAULT_AUTOSTART_PROMPT_DISMISSED = false;
+const DEFAULT_DEFAULT_MANAGER_PROMPT_DISMISSED = false;
+// On, like the desktop's: a fix that reaches nobody fixes nothing.
+const DEFAULT_UPDATE_CHECK = true;
 
 /** Resolved user preferences with their defaults. */
 export interface Prefs {
@@ -101,18 +121,28 @@ export interface Prefs {
 	autofillQuickType: boolean;
 	// Extension: act as a WebAuthn passkey provider for other sites.
 	passkeyProviderEnabled: boolean;
+	// Extension: an unlock counts as confirming it's you for passkeys until the vault locks.
+	passkeyConfirmOncePerUnlock: boolean;
 	// Extension: also lock when the OS screen locks, regardless of the timeout.
 	lockOnScreenLock: boolean;
 	// Home: collapse the Total / At Risk / Strong stats row.
 	statsCollapsed: boolean;
+	// Home: the vault list's sort order.
+	vaultSort: SortKey;
 	// Desktop: the backup section's "start at login" suggestion has been declined.
 	autostartPromptDismissed: boolean;
+	// Extension: the vault list's default-password-manager card has been declined.
+	defaultManagerPromptDismissed: boolean;
 	// Password generator: the settings last used in the generator panel.
 	generator: GeneratorSettings;
 	// The email alias provider for this vault, or null when none is set up.
 	aliasProvider: AliasConfig | null;
 	// Usage counters and ask history behind the store-review nudge.
 	reviewNudge: ReviewNudgeState;
+	// Mobile: check bramble.sh for a newer version.
+	updateCheck: boolean;
+	// Mobile: the last check's result and the version the notice was closed for.
+	appUpdate: AppUpdateState;
 }
 
 /** Each pref's storage key. A map rather than a ternary chain: the type makes it exhaustive, so
@@ -128,12 +158,17 @@ const META_KEYS: Record<keyof Prefs, string> = {
 	biometricPasscodeFallback: PREF_BIOMETRIC_PASSCODE_FALLBACK,
 	autofillQuickType: PREF_AUTOFILL_QUICKTYPE,
 	passkeyProviderEnabled: PREF_PASSKEY_PROVIDER,
+	passkeyConfirmOncePerUnlock: PREF_PASSKEY_CONFIRM_ONCE,
 	lockOnScreenLock: PREF_LOCK_ON_SCREEN_LOCK,
 	statsCollapsed: PREF_STATS_COLLAPSED,
+	vaultSort: PREF_VAULT_SORT,
 	autostartPromptDismissed: PREF_AUTOSTART_PROMPT_DISMISSED,
+	defaultManagerPromptDismissed: PREF_DEFAULT_MANAGER_PROMPT_DISMISSED,
 	generator: PREF_GENERATOR,
 	aliasProvider: PREF_ALIAS_PROVIDER,
 	reviewNudge: PREF_REVIEW_NUDGE,
+	updateCheck: PREF_UPDATE_CHECK,
+	appUpdate: PREF_APP_UPDATE,
 };
 
 /**
@@ -169,9 +204,12 @@ const PREF_SCOPE: Record<keyof Prefs, PrefScope> = {
 	biometricAutoPrompt: "vault",
 	autofillQuickType: "device",
 	passkeyProviderEnabled: "device",
+	passkeyConfirmOncePerUnlock: "device",
 	lockOnScreenLock: "device",
 	statsCollapsed: "device",
+	vaultSort: "device",
 	autostartPromptDismissed: "device",
+	defaultManagerPromptDismissed: "device",
 	biometricPasscodeFallback: "vault",
 	generator: "device",
 	// Not device-local: an alias provider is an account-level fact about the person, not about
@@ -180,6 +218,9 @@ const PREF_SCOPE: Record<keyof Prefs, PrefScope> = {
 	// Device: which store this install came from is a fact about the app on this machine, and the
 	// counters are of sessions on it. Syncing it would have a phone's usage spend a browser's asks.
 	reviewNudge: "device",
+	// Device: they describe this install's version, not the vault.
+	updateCheck: "device",
+	appUpdate: "device",
 };
 
 const VAULT_SCOPED = (Object.keys(PREF_SCOPE) as (keyof Prefs)[]).filter(
@@ -230,15 +271,20 @@ const DEFAULT_PREFS: Prefs = {
 	biometricPasscodeFallback: DEFAULT_BIOMETRIC_PASSCODE_FALLBACK,
 	autofillQuickType: DEFAULT_AUTOFILL_QUICKTYPE,
 	passkeyProviderEnabled: DEFAULT_PASSKEY_PROVIDER,
+	passkeyConfirmOncePerUnlock: DEFAULT_PASSKEY_CONFIRM_ONCE,
 	lockOnScreenLock: DEFAULT_LOCK_ON_SCREEN_LOCK,
 	statsCollapsed: DEFAULT_STATS_COLLAPSED,
+	vaultSort: DEFAULT_SEARCH.sort,
 	autostartPromptDismissed: DEFAULT_AUTOSTART_PROMPT_DISMISSED,
+	defaultManagerPromptDismissed: DEFAULT_DEFAULT_MANAGER_PROMPT_DISMISSED,
 	generator: DEFAULT_GENERATOR_SETTINGS,
 	aliasProvider: null,
 	// Evaluated at module load, so the placeholder shown for the few ms before the read lands
 	// describes an install with no history rather than one dating from the epoch, which would
 	// read as old enough to ask immediately.
 	reviewNudge: freshReviewNudgeState(Date.now()),
+	updateCheck: DEFAULT_UPDATE_CHECK,
+	appUpdate: {},
 };
 
 export interface UsePrefs {
@@ -337,7 +383,7 @@ export function PrefsProvider({ children }: { children: ReactNode }) {
 		}));
 		void (async () => {
 			if (retireLegacy) await retireLegacyFlatPrefs(storage);
-			const [a, b, c, d, e, f, g, h, i, j, k, l, m, n, o] = await Promise.all([
+			const [a, b, c, d, e, f, g, h, i, j, k, l, m, n, o, p, q, r, s, u] = await Promise.all([
 				storage.getMeta<number>(PREF_AUTOLOCK_MINUTES),
 				storage.getMeta<boolean>(PREF_BREACH_CHECK),
 				storage.getMeta<number>(PREF_CLIPBOARD_SECONDS),
@@ -363,6 +409,11 @@ export function PrefsProvider({ children }: { children: ReactNode }) {
 				),
 				storage.getMeta<unknown>(PREF_GENERATOR),
 				storage.getMeta<unknown>(PREF_REVIEW_NUDGE),
+				storage.getMeta<boolean>(PREF_DEFAULT_MANAGER_PROMPT_DISMISSED),
+				storage.getMeta<boolean>(PREF_PASSKEY_CONFIRM_ONCE),
+				storage.getMeta<boolean>(PREF_UPDATE_CHECK),
+				storage.getMeta<unknown>(PREF_APP_UPDATE),
+				storage.getMeta<unknown>(PREF_VAULT_SORT),
 			]);
 			if (cancelled) return;
 			// One `now` for the read: a fresh install's clock starts here rather than at whichever
@@ -382,8 +433,10 @@ export function PrefsProvider({ children }: { children: ReactNode }) {
 				biometricAutoPrompt: typeof g === "boolean" ? g : DEFAULT_BIOMETRIC_AUTO_PROMPT,
 				autofillQuickType: typeof h === "boolean" ? h : DEFAULT_AUTOFILL_QUICKTYPE,
 				passkeyProviderEnabled: typeof i === "boolean" ? i : DEFAULT_PASSKEY_PROVIDER,
+				passkeyConfirmOncePerUnlock: typeof q === "boolean" ? q : DEFAULT_PASSKEY_CONFIRM_ONCE,
 				lockOnScreenLock: typeof j === "boolean" ? j : DEFAULT_LOCK_ON_SCREEN_LOCK,
 				statsCollapsed: typeof k === "boolean" ? k : DEFAULT_STATS_COLLAPSED,
+				vaultSort: isSortKey(u) ? u : DEFAULT_SEARCH.sort,
 				autostartPromptDismissed: typeof l === "boolean" ? l : DEFAULT_AUTOSTART_PROMPT_DISMISSED,
 				biometricPasscodeFallback: typeof m === "boolean" ? m : DEFAULT_BIOMETRIC_PASSCODE_FALLBACK,
 				// Field by field: a stored object written by an older or hand-edited build is not
@@ -392,6 +445,10 @@ export function PrefsProvider({ children }: { children: ReactNode }) {
 				// Same treatment, and for a sharper reason: a junk `installedAt` here is the
 				// difference between asking after a fortnight and asking on day one.
 				reviewNudge: normalizeReviewNudgeState(o, now),
+				defaultManagerPromptDismissed:
+					typeof p === "boolean" ? p : DEFAULT_DEFAULT_MANAGER_PROMPT_DISMISSED,
+				updateCheck: typeof r === "boolean" ? r : DEFAULT_UPDATE_CHECK,
+				appUpdate: normalizeAppUpdateState(s),
 			}));
 			setLoaded(true);
 		})();

@@ -263,6 +263,15 @@ servers built for the social firehose, far more than signaling needs, and a down
 burden we avoid. The client must produce properly signed Nostr events so public relays accept
 them.
 
+**Signature forms:** Bramble's own relays forward signatures unread, which hid a bug: earlier
+builds signed `sha256(id)` instead of the event id NIP-01 requires, so any relay that checks
+signatures refused every event. Those builds also reject a correct signature, so the switch is
+staged. Every build now accepts both forms. On the hosted relay it still signs `sha256(id)` so
+released apps keep syncing, and on every other relay it signs the id. `nostr_sign` and
+`nostr_verify` are plain BIP340; the older form is `makeNostr` hashing the id before calling them.
+Once older apps have aged out, delete `isHostedRelay` and the second form. A relay's `OK false` is
+written to the sync status log, once per session.
+
 **Multi-relay + QR floor:** the client hits several relays at once and needs only one to
 deliver a small message once, which makes a flaky public commons reliable enough for a
 seconds-long handshake (the actual vault transfer is LAN-direct and touches no relay). If no
@@ -370,6 +379,35 @@ itself forever) then suppresses the rediscovery too: both devices sit in the sam
 believing it already found the other. Frequent socket drops used to hide this by producing a fresh
 hello every minute or two — which the keepalive above removes. So the mesh now re-announces every
 30s, first forgetting any peer it holds no transport for (`Mesh.announce`).
+
+**A connection always reports its end.** The mesh won't connect to a peer it still holds, and not
+every ending fires an event: `close()` fires no connection state change, and an offer nobody answers
+stays at ICE `new` for good (measured on WKWebView and Chromium). The relay stores nothing, so one
+lost answer could shut two long-lived sessions out of each other until one restarted. `createPeer`
+now has one way out (`end`), run once whichever part notices first, which also frees a connection
+that failed before anything held it, and a connection that hasn't opened after 60s gives up. An
+offer for a peer already held starts a new connection, since an offer only comes from a connection
+the other side just started. Issue #205.
+
+**Sync now restarts by hand.** Settings, Sync has a **Sync now** button (issue #230) that does what an
+unlock does, without the lock: it stops this vault's sessions and starts them again, so every peer is
+dropped and found afresh. A pairing in progress is left alone (the extension sends a roster stop, not
+a disconnect). A start still under way is let finish first, so its sessions are the ones replaced
+rather than kept running beside the new ones. It refuses while the vault is locked.
+
+## The sync log
+
+Settings, Sync shows the transport's status lines (issue #230). Each host stamps a line when it is
+logged (`report` in the desktop's `sync/bus.ts` and mobile's `sync-manager.ts`, `reportSyncStatus`
+in the extension's offscreen), so a line replayed to a panel that opened later keeps its own time.
+The extension keeps no history, so its panel shows only what was logged since it opened. The panel
+shows the time alone for today's lines and the date as well for older ones.
+
+A device's key prefix in a line gets the device's name after it, the same name the device list shows
+(`deviceNamer` in `sync-log.ts`). Relay session ids, the 8 hex characters in `peer 09d03287 found`,
+stay bare: each is a fresh key per session, and which device holds it is unknown until the Noise
+handshake. **Copy log** keeps full dates but leaves the names out, because copies get pasted into
+public bug reports.
 
 ## Merge engine: entry-level, keeping concurrent versions
 
@@ -528,6 +566,12 @@ Source of truth is the persisted `sync.group` roster.
   hooks). So a removal (or an enrollment) fans out to peers and converges; the receiver merges +
   persists and nudges the popup (`SYNC_EVENT {kind: "roster"}`). Bridged on both hosts: extension
   offscreen↔background (`SYNC_LOCAL_ROSTER` / `SYNC_APPLY_ROSTER`), mobile sync-manager direct.
+- **A new device reaches the group through a device both sides trust.** Gossip runs after
+  roster-auth, so a device whose key isn't in a peer's roster can't tell that peer about itself: the
+  peer closes, and the newcomer logs `handshake timed out` 15s later. It stays shut out until a
+  device in both rosters is online at the same moment as that peer. One envelope from it is enough:
+  `applyRoster` looks again when the envelope carried the inviter's first admission key alongside the
+  device it admitted, because the sender won't resend for 10 minutes. Issue #205.
 - **No re-auth on remove (by choice).** The panel is already behind an unlocked vault (the actor
   can read every secret), revoke is not a wipe, and it's reversible by re-pairing, so a
   *confirmation* is the right bar, not a master-password/biometric step-up. Add the step-up when

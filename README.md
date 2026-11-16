@@ -7,6 +7,7 @@
 [![macOS downloads](https://img.shields.io/endpoint?url=https%3A%2F%2Fbramble.sh%2Fapi%2Fdownloads%2Fmacos)](https://bramble.sh/latest/desktop)
 [![Linux downloads](https://img.shields.io/endpoint?url=https%3A%2F%2Fbramble.sh%2Fapi%2Fdownloads%2Flinux)](https://bramble.sh/latest/desktop)
 [![Windows](https://img.shields.io/endpoint?url=https%3A%2F%2Fbramble.sh%2Fapi%2Fversion%2Fwindows)](#whats-coming-next)
+[![Support us on Ko-fi](https://img.shields.io/badge/Support%20us%20on%20Ko--fi-72A4F2?logo=kofi&logoColor=white)](https://ko-fi.com/bramble_sh)
 
 A password manager that syncs between your devices. Your passwords are not saved on any server, so there's no account to make and no company to get breached and leak everything. You hold the vault, you hold the password, and that's it.
 
@@ -24,7 +25,7 @@ The same encrypted vault and the same Rust crypto core sit behind all four, and 
 - Chromium: [Chrome Web Store](https://chromewebstore.google.com/detail/bramble/kmokhdhoggbdcgoepifeckhgbfakaknm)
 - Firefox: [Firefox Add-ons Store](https://addons.mozilla.org/firefox/addon/bramble/)
 - Desktop (macOS, Linux): [bramble.sh](https://bramble.sh)
-- Android: [Releases](https://github.com/flythenimbus/bramble/releases)
+- Android: [Releases](https://github.com/bramble-sh/bramble/releases)
 - iOS: [App Store](https://apps.apple.com/us/app/bramble-password-manager/id6783071787)
 
 ## Screenshots
@@ -186,9 +187,9 @@ Parts of Bramble were written with AI assistance (Claude Opus), but every line w
 
 Open source and contributions welcome. [CONTRIBUTING.md](CONTRIBUTING.md) has the setup steps, the coding standard, and what CI expects. A few things worth knowing up front:
 
-- **Open an issue first for anything big.** Bug reports and small fixes can go straight to a PR. The tracker is at [github.com/flythenimbus/bramble/issues](https://github.com/flythenimbus/bramble/issues).
+- **Open an issue first for anything big.** Bug reports and small fixes can go straight to a PR. The tracker is at [github.com/bramble-sh/bramble/issues](https://github.com/bramble-sh/bramble/issues).
 - **Security software has a higher bar.** Expect changes to come with tests, and the crypto and vault-format paths to get extra scrutiny.
-- **Found a security issue?** Please don't file it in the public tracker. Report it privately via [GitHub Security Advisories](https://github.com/flythenimbus/bramble/security/advisories) or email, so it can be fixed before it's out in the open. See [SECURITY.md](SECURITY.md) for details.
+- **Found a security issue?** Please don't file it in the public tracker. Report it privately via [GitHub Security Advisories](https://github.com/bramble-sh/bramble/security/advisories) or email, so it can be fixed before it's out in the open. See [SECURITY.md](SECURITY.md) for details.
 
 PRs that add real-site autofill fixtures or import-format coverage are especially handy.
 
@@ -220,9 +221,7 @@ bc1q78sd5rnuufqdtv9plp0p56hrq72c9unj8tec8t
 
 ## Code signing policy
 
-Free code signing provided by [SignPath.io](https://signpath.io), certificate by [SignPath Foundation](https://signpath.org).
-
-The desktop app's Windows installer is built by GitHub Actions from this repository and signed through SignPath only after a manual approval, so Windows shows **SignPath Foundation** as its publisher. Team roles, how a signed build is made, and the privacy statement are in the full [code signing policy](https://bramble.sh/code-signing).
+The desktop app's Windows installer is built by GitHub Actions from the main branch of this repository and Authenticode-signed with [Azure Artifact Signing](https://learn.microsoft.com/azure/artifact-signing/), with no signing secret stored anywhere. Team roles, how a signed build is made, and the privacy statement are in the full [code signing policy](https://bramble.sh/code-signing).
 
 ## License
 

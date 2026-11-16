@@ -20,6 +20,8 @@ type Inbound =
 			otpOnly?: boolean;
 			suggest?: { password: string };
 			alias?: AliasRowState;
+			// A trailing "new login" row, under a login field's matches (#213).
+			newLogin?: boolean;
 			// The card already filled elsewhere on this page: rendered with a badge, never
 			// highlighted (Enter belongs to the page's form).
 			carriedId?: string;
@@ -96,11 +98,11 @@ function initials(name: string): string {
 const AVATAR_COLORS = [
 	"#7C3AED",
 	"#2563EB",
-	"#0891B2",
-	"#059669",
-	"#65A30D",
-	"#CA8A04",
-	"#EA580C",
+	"#0E7490",
+	"#047857",
+	"#4D7C0F",
+	"#A16207",
+	"#C2410C",
 	"#DC2626",
 	"#DB2777",
 ];
@@ -119,7 +121,7 @@ const STYLE = `
 		color-scheme: light dark;
 		--tp-surface: #ffffff; /* --popover */
 		--tp-foreground: oklch(20.5% 0 0); /* --popover-foreground */
-		--tp-muted: oklch(55.6% 0 0); /* --muted-foreground */
+		--tp-muted: oklch(52% 0 0); /* --muted-foreground */
 		--tp-border: oklch(87% 0 0); /* --border */
 		--tp-primary: oklch(20.5% 0 0); /* --primary */
 		--tp-on-primary: #ffffff; /* --primary-foreground */
@@ -223,6 +225,8 @@ const STYLE = `
 	.tp-alias-busy { opacity: 0.75; cursor: default; }
 	.tp-alias-error .tp-user { color: var(--tp-danger, #dc2626); }
 	.tp-spin { animation: tp-spin 0.9s linear infinite; }
+	.tp-new-login { display: flex; align-items: center; gap: 6px; width: 100%; padding: 6px 12px; border: 0; border-top: 1px solid var(--tp-border); background: none; color: var(--tp-muted); font: inherit; font-size: 12px; text-align: left; cursor: pointer; }
+	.tp-new-login:hover { color: var(--tp-foreground); }
 	.tp-hint { padding: 8px 12px; color: var(--tp-muted); font-size: 12px; }
 	@keyframes tp-spin { to { transform: rotate(360deg); } }
 	.tp-avatar-suggest svg { width: 20px; height: 20px; }
@@ -328,6 +332,17 @@ function suggestRow(password: string): string {
 				<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 12a9 9 0 0 1 15-6.7L21 8"></path><path d="M21 3v5h-5"></path><path d="M21 12a9 9 0 0 1-15 6.7L3 16"></path><path d="M3 21v-5h5"></path></svg>
 			</button>
 		</div>
+	`;
+}
+
+/** Twin of content/html/dropdown-new-login.ts. Both must change together; see template-parity.
+ * A small link, not a row: clicked, never reached by the arrow keys, so Enter never opens a window. */
+function newLoginRow(): string {
+	return html`
+		<button type="button" class="tp-new-login" data-tp-new-login="1">
+			<svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 5v14"></path><path d="M5 12h14"></path></svg>
+			${t("newLoginTitle")}
+		</button>
 	`;
 }
 
@@ -454,6 +469,11 @@ document.addEventListener("mousedown", (e) => {
 		if (clickAllowed()) post({ type: "UI_USE_ALIAS", pointer: true });
 		return;
 	}
+	if (target?.closest("[data-tp-new-login]")) {
+		e.preventDefault();
+		post({ type: "UI_NEW_LOGIN" });
+		return;
+	}
 	if (target?.closest("[data-tp-popout]")) {
 		e.preventDefault();
 		post({ type: "UI_POPOUT" });
@@ -507,6 +527,7 @@ function handleInbound(msg: Inbound | undefined): void {
 				rows.push({ kind: "match", id: m.id });
 				body.push(matchRow(m, m.id === msg.carriedId));
 			}
+			if (msg.newLogin) body.push(newLoginRow());
 			render(body.join(""));
 			settledAt = performance.now();
 			post({ type: "UI_HIGHLIGHT", active: false });

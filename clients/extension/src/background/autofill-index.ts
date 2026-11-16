@@ -30,6 +30,14 @@ import {
 	onDesktopFillRequest,
 	reportActiveTab,
 } from "./desktop-link";
+import { shortcutGrantLive, spendShortcutGrant } from "./fill-shortcut";
+import {
+	armLaunchGrant,
+	LAUNCH_VIEW_GRACE_MS,
+	type LaunchGrant,
+	liveLaunchGrant,
+	spendLaunchGrant,
+} from "./launch-fill";
 import { sendToOffscreen } from "./offscreen-client";
 import { generateSuggestion } from "./password-gen";
 import { getAutofillEnabled } from "./prefs";
@@ -47,6 +55,7 @@ import {
 	vaultLocked,
 } from "./session";
 import { bytesToBase64, readAndDecodeVault } from "./vault-io";
+import { armViewGrace } from "./view-lock";
 
 const HOSTNAMES_KEY = "autofill.knownHostnames";
 
@@ -711,13 +720,17 @@ async function autofillQuery(
 	try {
 		// Master switch (Settings -> General). Enforced here rather than only in the page: a content
 		// script is not a trusted context, so the answer a page gets must not depend on it asking.
-		if (!(await getAutofillEnabled())) return { ok: true, data: disabledResult() };
+		// Or the fill shortcut, pressed in this tab: the browser alone delivers it (fill-shortcut.ts).
+		if (!(await getAutofillEnabled()) && !shortcutGrantLive(sender.tab?.id)) {
+			return { ok: true, data: disabledResult() };
+		}
 		await hydrateAutofillIndexFromDisk();
 		const hasLogin = message.hasLogin !== false;
 		const hasCard = message.hasCard === true;
 		const hasOtp = message.hasOtp === true;
 		const result = queryResult(page.hostname, effectivePort(page), hasLogin, hasCard, hasOtp);
 		result.sameSiteAsTop = sameSiteAsTop(sender);
+		if (hasLogin && !result.locked && launchGrantFor(sender, page)) result.launch = true;
 		if (hasCard && !result.locked) {
 			// Only ever an id this very response already carries, so the page learns nothing it
 			// could not read off `cards` itself.
@@ -764,7 +777,9 @@ async function autofillSelect(
 	// The switch again: an open dropdown from before it was turned off, or an orphaned content
 	// script, must not be able to fill. Nothing here says why - a page learns no more than
 	// "unavailable" from any other refusal.
-	if (!(await getAutofillEnabled())) return { ok: false, error: "unavailable" };
+	if (!(await getAutofillEnabled()) && !shortcutGrantLive(sender.tab?.id)) {
+		return { ok: false, error: "unavailable" };
+	}
 	try {
 		await hydrateAutofillIndexFromDisk();
 		await scheduleAutoLock();
@@ -773,6 +788,11 @@ async function autofillSelect(
 		authorizeFill(message.payload.entryId, page.hostname, effectivePort(page));
 		const payload = fetchFill(message.payload.entryId);
 		rememberCardCarry(payload.kind, message.payload.entryId, sender.tab?.id);
+		spendShortcutGrant(sender.tab?.id);
+		// The user chose for this tab, so a launch must not fill over it later.
+		if (payload.kind === "login" && !message.payload.otpOnly && sender.tab?.id !== undefined) {
+			spendLaunchGrant(sender.tab.id);
+		}
 		return {
 			ok: true,
 			data: {
@@ -786,6 +806,165 @@ async function autofillSelect(
 		// Do not expose entry ids, values, or implementation errors to a page sender.
 		return { ok: false, error: "unavailable" };
 	}
+}
+
+function validLaunchPayload(payload: unknown): { entryId: string; url: URL } | null {
+	const p = (payload ?? {}) as Record<string, unknown>;
+	if (typeof p.entryId !== "string" || !p.entryId || p.entryId.length > 256) return null;
+	if (typeof p.url !== "string") return null;
+	try {
+		const url = new URL(p.url);
+		return url.protocol === "http:" || url.protocol === "https:"
+			? { entryId: p.entryId, url }
+			: null;
+	} catch {
+		return null;
+	}
+}
+
+/** Whether this login may be filled in the tab about to open on `url`. */
+async function launchQualifies(
+	owner: AutofillSessionOwner,
+	entryId: string,
+	url: URL,
+): Promise<boolean> {
+	if (!(await getAutofillEnabled())) return false;
+	await hydrateAutofillIndexFromDisk();
+	if (!autofillSessionOwnerIsCurrent(owner)) return false;
+	const entry = currentIndex()?.get(entryId);
+	return (
+		entry?.type === "login" &&
+		entry.autofillEnabled !== false &&
+		!!entry.password &&
+		hostnameMatches(entry, url.hostname, effectivePort(url))
+	);
+}
+
+/** A new tab in the last focused normal window, or a new window when there is none. */
+async function openInNormalWindow(url: string): Promise<number | undefined> {
+	const win = await api.windows.getLastFocused({ windowTypes: ["normal"] }).catch(() => undefined);
+	if (win?.id === undefined) return (await api.windows.create({ url }))?.tabs?.[0]?.id;
+	const tab = await api.tabs.create({ url, windowId: win.id, active: true });
+	// The launch can come from a pop-out, which would otherwise stay in front of the new tab.
+	await api.windows.update(win.id, { focused: true }).catch(() => {});
+	return tab.id;
+}
+
+async function autofillLaunch(message: any): Promise<MessageEnvelope> {
+	const launch = validLaunchPayload(message.payload);
+	if (!launch) return { ok: false, error: "invalid_request" };
+	const owner = autofillSessionOwner();
+	const qualifies = !!owner && (await launchQualifies(owner, launch.entryId, launch.url));
+	// Opening a tab closes the popup, which "Immediate" would take for the last view going away.
+	if (qualifies) armViewGrace(LAUNCH_VIEW_GRACE_MS);
+	const tabId = await openInNormalWindow(launch.url.href);
+	if (owner && qualifies && tabId !== undefined) {
+		armLaunchGrant(tabId, launch.entryId, owner, launch.url.protocol);
+	}
+	return { ok: true, data: null };
+}
+
+/** A frame's rules on top of the page rules: the page around it has to be the login's too. */
+function frameMayClaim(entry: LoginIndexEntry, sender: chrome.runtime.MessageSender): boolean {
+	if (!sameSiteAsTop(sender)) return false;
+	try {
+		const top = new URL(sender.tab?.url ?? "");
+		return hostnameMatches(entry, top.hostname, effectivePort(top));
+	} catch {
+		return false;
+	}
+}
+
+/** The live grant this sender could spend. Decides from the verified sender alone. */
+function launchGrantFor(sender: chrome.runtime.MessageSender, page: URL): LaunchGrant | null {
+	const tabId = sender.tab?.id;
+	if (tabId === undefined) return null;
+	const grant = liveLaunchGrant(tabId);
+	if (!grant) return null;
+	// Hostname matching ignores the scheme, and a password must not go out over a downgrade.
+	if (page.protocol === "http:" && grant.protocol !== "http:") return null;
+	const entry = currentIndex()?.get(grant.entryId);
+	if (entry?.type !== "login" || entry.autofillEnabled === false) return null;
+	if (!hostnameMatches(entry, page.hostname, effectivePort(page))) return null;
+	return sender.frameId === 0 || frameMayClaim(entry, sender) ? grant : null;
+}
+
+type FrameSize = { frameWidth: number; frameHeight: number };
+
+function validFrameSize(payload: unknown): payload is FrameSize {
+	const p = (payload ?? {}) as Record<string, unknown>;
+	return (
+		typeof p.frameWidth === "number" &&
+		Number.isFinite(p.frameWidth) &&
+		typeof p.frameHeight === "number" &&
+		Number.isFinite(p.frameHeight)
+	);
+}
+
+/** Ask the top frame whether this frame may fill. No answer is a no. */
+async function topFrameYields(tabId: number, size: FrameSize): Promise<boolean> {
+	const reply = (await api.tabs
+		.sendMessage(tabId, { type: "AUTOFILL_LAUNCH_TOP_CHECK", payload: size }, { frameId: 0 })
+		.catch(() => undefined)) as { hasPassword?: unknown; frameVisible?: unknown } | undefined;
+	return reply?.hasPassword === false && reply.frameVisible === true;
+}
+
+async function autofillLaunchClaim(
+	message: any,
+	sender: chrome.runtime.MessageSender,
+): Promise<MessageEnvelope> {
+	const page = pageSenderUrl(sender);
+	if (!page) return { ok: false, error: "forbidden" };
+	const tabId = sender.tab?.id;
+	if (tabId === undefined) return { ok: false, error: "forbidden" };
+	const isFrame = sender.frameId !== 0;
+	if (isFrame && !validFrameSize(message.payload)) return { ok: false, error: "invalid_request" };
+	const generation = autofillSessionSnapshot();
+	if (!autofillSessionIsCurrent(generation)) return { ok: false, error: "unavailable" };
+	if (!(await getAutofillEnabled())) return { ok: false, error: "unavailable" };
+	try {
+		await hydrateAutofillIndexFromDisk();
+		if (!launchGrantFor(sender, page)) return { ok: false, error: "unavailable" };
+		await scheduleAutoLock();
+		if (isFrame && !(await topFrameYields(tabId, message.payload))) {
+			return { ok: false, error: "unavailable" };
+		}
+		// Every check below runs synchronously after the last await, so two claims can't both spend.
+		if (!autofillSessionIsCurrent(generation)) return { ok: false, error: "unavailable" };
+		const grant = launchGrantFor(sender, page);
+		if (!grant) return { ok: false, error: "unavailable" };
+		authorizeFill(grant.entryId, page.hostname, effectivePort(page));
+		const payload = fetchFill(grant.entryId);
+		spendLaunchGrant(tabId);
+		return {
+			ok: true,
+			data: { payload, isAuto: true, otpOnly: false, sessionGeneration: generation },
+		};
+	} catch {
+		return { ok: false, error: "unavailable" };
+	}
+}
+
+/** The user clicked or typed in the tab: whatever comes next isn't the page they launched. */
+async function autofillLaunchEnd(
+	_message: unknown,
+	sender: chrome.runtime.MessageSender,
+): Promise<MessageEnvelope> {
+	if (!pageSenderUrl(sender) || sender.tab?.id === undefined) {
+		return { ok: false, error: "forbidden" };
+	}
+	spendLaunchGrant(sender.tab.id);
+	return { ok: true, data: null };
+}
+
+async function autofillLaunchLive(
+	_message: unknown,
+	sender: chrome.runtime.MessageSender,
+): Promise<MessageEnvelope> {
+	if (!pageSenderUrl(sender) || sender.tab?.id === undefined) {
+		return { ok: false, error: "forbidden" };
+	}
+	return { ok: true, data: { live: liveLaunchGrant(sender.tab.id) !== null } };
 }
 
 async function autofillRevalidateSubmit(
@@ -937,4 +1116,8 @@ on("AUTOFILL_FIND", autofillFind);
 on("AUTOFILL_FETCH", autofillFetch);
 on("AUTOFILL_QUERY", autofillQuery);
 on("AUTOFILL_SELECT", autofillSelect);
+on("AUTOFILL_LAUNCH", extensionOnly(autofillLaunch));
+on("AUTOFILL_LAUNCH_CLAIM", autofillLaunchClaim);
+on("AUTOFILL_LAUNCH_END", autofillLaunchEnd);
+on("AUTOFILL_LAUNCH_LIVE", autofillLaunchLive);
 on("AUTOFILL_REVALIDATE_SUBMIT", autofillRevalidateSubmit);

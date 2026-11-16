@@ -24,6 +24,7 @@ import {
 	padMessage,
 	unpadMessage,
 } from "./relay-channel";
+import { isRelayUrl } from "./relay-url";
 import { createPeer, type Peer, type PeerSignal } from "./webrtc-peer";
 
 export interface PeerSession {
@@ -32,6 +33,13 @@ export interface PeerSession {
 	initiator: boolean;
 	channel: Channel;
 	close(): void;
+	/** Close it and never connect to it again in this session: it is reachable on the local link.
+	 * A plain close lets its next hello reconnect, which for a skipped peer is a relay round trip
+	 * every few seconds. */
+	skip?(): void;
+	/** Hear that the peer has gone, from a source that can tell. A relay peer has no such signal
+	 * and is dropped for going silent; a local one's host knows the moment its pipe dies. */
+	onGone?(cb: () => void): void;
 }
 
 export interface MeshOptions {
@@ -67,6 +75,8 @@ export interface MeshOptions {
 const RECONNECT_BASE_MS = 1000;
 /** The ceiling, so an offline machine retries about twice a minute rather than never. */
 const RECONNECT_MAX_MS = 30_000;
+/** Candidates kept per peer while its offer is on the way: a connection gathers a handful. */
+const MAX_EARLY_CANDIDATES = 32;
 
 const nowSec = (): number => Math.floor(Date.now() / 1000);
 const short = (pubkey: string): string => pubkey.slice(0, 8);
@@ -128,6 +138,10 @@ class Mesh {
 		{ receive: (f: DataFrame) => void; close: () => void }
 	>();
 	private readonly known = new Set<string>();
+	/** Peers the caller skipped. See PeerSession.skip. */
+	private readonly skipped = new Set<string>();
+	/** Candidates that arrived before the offer they belong to, by peer. See routeSignal. */
+	private readonly early = new Map<string, PeerSignal[]>();
 	private socket!: WebSocket;
 	private client!: SignalingClient;
 	private epoch = 0;
@@ -136,6 +150,7 @@ class Mesh {
 	private rollTimer: ReturnType<typeof setInterval> | undefined;
 	private announceTimer: ReturnType<typeof setInterval> | undefined;
 	private clockWarned = false;
+	private rejectionWarned = false;
 	/** Set by stop(), so a socket closing during teardown is not treated as a drop. */
 	private stopped = false;
 	private reconnectTimer: ReturnType<typeof setTimeout> | undefined;
@@ -159,8 +174,9 @@ class Mesh {
 	}
 
 	async start(): Promise<void> {
-		await this.roll();
 		const url = this.opts.relayUrl;
+		if (!isRelayUrl(url)) throw new Error("the relay URL isn't valid: check it under Advanced");
+		await this.roll();
 		const host = relayHost(url);
 		this.socket = new WebSocket(url);
 		let opened = false;
@@ -207,6 +223,11 @@ class Mesh {
 				this.attempts = 0; // a connection that opens clears the backoff
 				clearTimeout(timer);
 				this.opts.onStatus(`relay connected (${host})`);
+			},
+			(reason) => {
+				if (this.rejectionWarned) return;
+				this.rejectionWarned = true;
+				this.opts.onStatus(`relay refused an event: ${reason.slice(0, 200)}`);
 			},
 		);
 		this.sendHello();
@@ -356,7 +377,7 @@ class Mesh {
 	// Deterministic role: lower pubkey offers. Re-announce once per new peer so a
 	// late joiner still learns us over the store-nothing relay.
 	private async discover(remote: string, remoteRtc: boolean): Promise<void> {
-		if (this.known.has(remote)) return;
+		if (this.known.has(remote) || this.skipped.has(remote)) return;
 		this.known.add(remote);
 		this.opts.onPeerState?.(remote, "found");
 		this.sendHello();
@@ -386,10 +407,24 @@ class Mesh {
 	}
 
 	private async routeSignal(remote: string, signal: PeerSignal): Promise<void> {
+		if (this.skipped.has(remote)) return;
 		let peer = this.peers.get(remote);
+		// An offer means the other side started over, so whatever is held for it is finished.
+		if (peer && signal.kind === "offer") {
+			peer.close();
+			peer = undefined;
+		}
 		if (!peer) {
 			// Only an offer bootstraps a responder, but candidates arriving during its
 			// ICE request must wait for that same peer rather than being discarded.
+			if (signal.kind === "candidate" && !this.pendingPeers.has(remote)) {
+				// Or ahead of the offer itself: the native engine (iOS, the Linux desktop) reports a
+				// candidate while its setLocalDescription is still returning, so it goes out first.
+				const held = this.early.get(remote) ?? [];
+				if (held.length < MAX_EARLY_CANDIDATES) held.push(signal);
+				this.early.set(remote, held);
+				return;
+			}
 			if (signal.kind !== "offer" && !this.pendingPeers.has(remote)) return;
 			this.known.add(remote);
 			try {
@@ -399,7 +434,13 @@ class Mesh {
 				return;
 			}
 		}
-		if (!this.stopped) await peer?.handleSignal(signal);
+		if (this.stopped) return;
+		await peer?.handleSignal(signal);
+		if (signal.kind === "offer") {
+			const held = this.early.get(remote) ?? [];
+			this.early.delete(remote);
+			for (const candidate of held) if (!this.stopped) await peer?.handleSignal(candidate);
+		}
 	}
 
 	private makePeer(remote: string, initiator: boolean): Promise<Peer | undefined> {
@@ -429,7 +470,16 @@ class Mesh {
 			onMessage: push,
 			onOpen: () => {
 				this.opts.onPeerState?.(remote, "open");
-				this.opts.onPeer({ remotePubkey: remote, initiator, channel, close: () => peer.close() });
+				this.opts.onPeer({
+					remotePubkey: remote,
+					initiator,
+					channel,
+					close: () => peer.close(),
+					skip: () => {
+						this.skipped.add(remote);
+						peer.close();
+					},
+				});
 			},
 			onClose: () => {
 				this.opts.onPeerState?.(remote, "closed");
@@ -449,6 +499,7 @@ class Mesh {
 	// relay as chunked, group-key-encrypted "data" events; the relay only sees ciphertext.
 	// Idempotent + lazy so it works whichever arrives first, a peer's hello or its data.
 	private routeData(remote: string, frame: DataFrame): void {
+		if (this.skipped.has(remote)) return;
 		this.ensureRelayPeer(remote, this.opts.signer.pubkeyHex < remote).receive(frame);
 	}
 
@@ -475,7 +526,16 @@ class Mesh {
 			},
 		};
 		this.relayPeers.set(remote, entry);
-		this.opts.onPeer({ remotePubkey: remote, initiator, channel, close: entry.close });
+		this.opts.onPeer({
+			remotePubkey: remote,
+			initiator,
+			channel,
+			close: entry.close,
+			skip: () => {
+				this.skipped.add(remote);
+				entry.close();
+			},
+		});
 		return entry;
 	}
 }

@@ -2,7 +2,11 @@
 
 import { parseRegistry, VAULT_REGISTRY_KEY } from "@core/vault/vault-registry";
 import { api } from "../platform-api";
-import { ACTIVE_VAULT_SESSION_KEY, CORNER_HANDOFF_KEY } from "../session-keys";
+import {
+	ACTIVE_VAULT_SESSION_KEY,
+	CORNER_HANDOFF_KEY,
+	LAST_OPENED_VAULT_KEY,
+} from "../session-keys";
 import { extensionStorage } from "../storage";
 import { getAutoLockMinutes } from "./prefs";
 import { type MessageEnvelope, on } from "./router";
@@ -18,9 +22,6 @@ const POPOUT_WINDOW_KEY = "popout.windowId";
 // Id of a pop-out opened solely to unlock (the picker's "Vault locked" row). It is a step in the
 // page's fill flow, not a place the user asked to be, so it closes itself once the vault unlocks.
 const POPOUT_UNLOCK_WINDOW_KEY = "popout.unlockWindowId";
-// The vault the UI last opened. In local (not session) so it outlives the lock that clears the
-// active id. A UUID, not a secret.
-export const LAST_OPENED_VAULT_KEY = "vault.lastOpenedId";
 
 /** Make the last opened vault the active one, so a view opened to unlock boots on its unlock
  * screen instead of the picker. Leaves an existing selection alone and skips a deleted vault. */
@@ -107,12 +108,17 @@ async function popoutOpen(
 	armViewGrace();
 
 	const payload = message.payload as { handoff?: { draft?: unknown }; reason?: string } | undefined;
-	const handoff = payload?.handoff;
+	// The page dropdown's "new login" row names a reason, never a path: a page must not steer the
+	// window to a route of its choosing. The form reads the site from the tab behind it (#213).
+	const newLogin = payload?.reason === "new-login";
+	const handoff: { draft?: unknown; path?: string } | undefined = newLogin
+		? { path: "/vault/new/login" }
+		: payload?.handoff;
 	// Single instance: focus an already-open pop-out instead of spawning a duplicate. A request
 	// carrying an in-flight draft is the exception - the open window consumed its boot handoff
 	// once, so focusing it would silently drop the new draft (which can hold a plaintext
 	// password). Route-only / unlock-request pop-outs have nothing to lose, so they dedupe.
-	if (handoff?.draft === undefined && (await focusExistingPopout())) {
+	if (!newLogin && handoff?.draft === undefined && (await focusExistingPopout())) {
 		return { ok: true };
 	}
 	if (payload?.reason === "unlock") await targetLastOpenedVault();

@@ -195,6 +195,10 @@ work below.
 `TrustedBrowsers.allowlistJson()`, built from the same `BROWSERS` map the autofill service uses to
 decide whether to honour a caller-supplied `webDomain`, so there is one source of truth for "is this
 really that browser" (there is no `res/raw/privileged_browsers.json`; an earlier draft planned one).
+`PASSKEY_RELAYS` adds Google Play Services for the passkey origin only: a passkey QR code scanned
+from another device (hybrid) reaches the provider through it, with the site's origin and the other
+device's clientDataHash. Without it a create fails and a sign-in lists nothing. It never joins
+`BROWSERS`, so autofill keeps ignoring its `webDomain`.
 
 Two different things stop a browser passkey working, at two different stages, and they look nothing
 alike. **Diagnose in this order** - most of a day went into rediscovering that the second one is
@@ -248,11 +252,11 @@ render as timeout/cancelled copy ("The request either timed out, was canceled or
 already registered"). `warnUnverifiedBrowserHash` logs the caller's package **and its signing
 fingerprints** precisely so the fix is a copy-paste into `BROWSERS`.
 
-`BROWSERS` is a hand-curated subset of 14 packages: 8 from Google's GPM privileged-apps list
-(Samsung Internet stable + beta added for #70, release key only), Vivaldi's 3 channels, Vanadium
-(read on-device, since listed in GPM with the same key), and 2 privacy browsers absent from GPM
-(IronFox, Fennec F-Droid) read on-device. As of 2026-10-16 the GPM list carries 73 packages, so 61
-remain unlisted and each would fail at stage 2 once it cleared stage 1. No Xiaomi browser is in it
+`BROWSERS` is a hand-curated subset of 15 packages: 9 from Google's GPM privileged-apps list
+(Samsung Internet stable + beta added for #70, release key only; Waterfox for #202, plus the
+different key its GitHub APKs carry), Vivaldi's 3 channels, Vanadium (read on-device, since listed
+in GPM with the same key), and 2 privacy browsers absent from GPM (IronFox, Fennec F-Droid) read
+on-device. As of 2026-10-16 the GPM list carries 73 packages, so 60 remain unlisted and each would fail at stage 2 once it cleared stage 1. No Xiaomi browser is in it
 (`com.mi.globalbrowser` is absent, and the list's generic `com.android.browser` entry names no
 vendor). Syncing the full list would close that class, at the cost of extending the
 autofill `webDomain` trust to those packages, so it is a deliberate decision rather than a
@@ -408,6 +412,11 @@ error instead of the user watching it silently reroute. Both, ideally.
 Note this hole is not unique to Bramble: any provider on this API that authenticates its own unlock
 with WebAuthn has it. It is the price of all-or-nothing interception.
 
+**What we do about it.** A verified ceremony whose request a pause ended leaves a retry grant in the
+service worker's memory: one use, 60 seconds, same origin and rpID. The site's next try still shows
+the card but skips the confirm-it's-you window and reports UV. The master password never pauses, so
+it completes the original request. Firefox has no proxy, so a tap there does too.
+
 **Not covered, still manual:** whether Chrome destroys the toolbar popup when its own WebAuthn
 dialog takes focus. Device testing (2026-08-29) found the toolbar popup **survives** the dialog and
 in fact cannot be dismissed during the ceremony, and Vivaldi's dialog forces cancel-or-proceed, so
@@ -457,6 +466,13 @@ local "which provider made this passkey" UIs. Worth doing for attribution, not l
   passkey-specific security regression. Done on every surface since 2026-11-01: UV "required" and
   PRF force a verification in the ceremony, and a ceremony without one reports UV=0
   ([passkey-security-review.md](passkey-security-review.md)).
+  The extension has one opt-in exception, **Confirm passkeys once per unlock**
+  (`pref.passkeyConfirmOncePerUnlock`, off by default): the unlock that opened the vault counts as
+  the verification until it locks, so no confirm window opens and every ceremony reports UV=1. On
+  Chrome the only smooth answer to that window is the master password (a key tap ends the request),
+  so a site that requires verification otherwise means typing it on every sign-in. Anyone at an
+  unlocked browser can already read every password, so what the user gives up is the extra check on
+  passkey-only accounts and on sites that treat UV as a second factor.
 - **Caller binding.** Android binds every rpId to its caller: a verified privileged browser's origin
   must be that site, and an app needs the rpId's `assetlinks.json` to vouch for it. Chrome takes the
   origin from its own stamp on the proxied request, Firefox from the message sender.

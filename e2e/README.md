@@ -1,6 +1,6 @@
 # End-to-end tests (Playwright)
 
-Four suites, each with its own config, because they need different things attached. Only the first
+Five suites, each with its own config, because they need different things attached. Only the first
 two are CI-safe.
 
 | Suite | Command | Needs | What it reaches |
@@ -9,12 +9,24 @@ two are CI-safe.
 | `extension/transport-race/` | `pnpm test:transport-race` | `FIREFOX_BINARY` for the Firefox project | the browser's own request/reply primitive |
 | `sync/` | `pnpm test:e2e:sync` | nothing (servers auto-start) | two peers pairing over real WebRTC |
 | `android/` | `pnpm test:e2e:android` | a device attached | the **shipped** app: uniffi Rust core, native storage |
+| `desktop-link/` | `pnpm test:e2e:desktop-link` | macOS (builds the desktop app) | the real desktop app and extension, linked over native messaging |
 
 `perf/page-blocking.mjs` is not a suite: it is a plain script (`node
 e2e/perf/page-blocking.mjs [url]`) that loads a real site twice, once with the built Chromium
 extension and once without, and prints the difference in main-thread blocking time. It needs the
 network, so it is manual. It is what quantified issue #59 and what should be re-run after any
 change to the content script's detection or its mutation handling.
+
+`firefox/corner-prompt-typing.mjs` is not a suite either. It is the Firefox half of
+`extension/corner-prompt-typing.spec.ts`: a plain script that drives a stock Firefox over WebDriver
+BiDi through `firefox/driver.mjs`, because Playwright cannot load a Firefox add-on and web-ext
+cannot type or click. Manual too, and worth a run before a Firefox release that touches the save
+card:
+
+```sh
+pnpm --filter @vault/platform-extension build:firefox
+FIREFOX_BINARY=/path/to/firefox node e2e/firefox/corner-prompt-typing.mjs
+```
 
 The transport-race gate lives under `extension/` but is `testIgnore`d from `playwright.config.ts`:
 it loads its own tiny fixture rather than the built extension, so it needs no build and runs in
@@ -186,6 +198,73 @@ merge delivers it. Measured, not assumed.
 
 **Not covered:** mobile's native layer. In a desktop browser Capacitor falls back to the WASM
 crypto core and the web Filesystem/Preferences — that's what `android/` is for.
+
+---
+
+## `desktop-link/`: the desktop app and the extension, linked
+
+The desktop app's debug build and the extension in Chromium, linked on one machine as
+docs/desktop-link-onboarding.md describes: the first-run banner, Settings with Combine (a file
+included), approving and then leaving the screen, linking again after backing out, a browser that
+granted the permission at link time (Settings taking the desktop's vault, and the app coming
+forward and approving first), a browser listed only by the vault it linked to, and a link per
+vault: two pairs in one browser profile with nothing crossing between them, a link abandoned at the
+copy step leaving nothing on either side, a browser removed on the desktop dropping its link, and
+two profiles pairing with one desktop vault; an empty desktop vault taking a named browser vault's
+entries and file, all still there when the popup reopens; a window lending the worker a pipe, so
+the link is back the moment it opens; and a worker from before the permission grant bringing the
+link back by itself once the page that lent its pipe has closed. Each test is a flow that once
+failed when run this way.
+
+```sh
+pnpm test:e2e:desktop-link
+```
+
+The script builds the extension and the desktop app (`cargo build`, a few minutes from clean), and
+the config starts the local relay (port 7400) and the desktop's Vite dev server on port 1420. Neither
+is reused if something already holds the port: the debug build loads its window from 1420, so a dev
+server already there is someone else's. macOS only; the tests skip elsewhere.
+
+**What it touches.** The desktop app runs with `HOME` and `CFFIXED_USER_HOME` pointed at a scratch
+directory under `/tmp`, with a throwaway keychain as its default, so its data, socket,
+native-messaging manifests and keychain items stay out of your own install. The fixture refuses to
+start if `security` would still read your keychain settings under the scratch HOME, and fails the run
+if they differ afterwards. The desktop window appears on screen and is raised before each desktop
+step, as a person would; the browser is headless. The desktop's update check is the one request that
+leaves the machine. The extension's are asserted to stay local, and the vault copy to finish before
+the extension touches the relay at all.
+
+**How it drives the desktop.** Through the dev-only bridge
+(`clients/desktop/scripts/vite-e2e-bridge.mjs`): the config mints a per-run token, Vite mounts
+`/__bramble_e2e` only when given it, and the window runs what is posted there. None of it reaches a
+release build (`clients/desktop/src/e2e-bridge.test.ts`).
+
+**What bit while building it,** each handled in `fixtures.ts`:
+
+- A window behind others counts as hidden. WebKit stops rendering it, so `innerText` comes back
+  empty and work the window does in the background slows down. The helpers read `textContent` too,
+  and each desktop step raises the window first.
+- The app's socket path must fit in 104 bytes, hence the short scratch path under `/tmp`.
+- Vite listens on `[::1]` only, so the bridge client calls `localhost`, not `127.0.0.1`.
+- The extension asks for native messaging as an optional permission, and nothing can answer the
+  prompt here, so the fixture loads a copy that requires it.
+- That copy's worker can open its own pipe, which a real first link's cannot: the worker predates
+  the grant (docs/desktop-link-optional-permission.md, finding 1), so everything rides a pipe a page
+  lends it. `test.use({ borrowsPipe: true })` takes `connectNative` away from the worker before its
+  code runs, which is that state. Two bugs only showed there: two requests on one lent pipe, and a
+  vault copy with no pipe to ride.
+- An attached debugger stops a worker going idle, and Playwright attaches to every worker it can
+  see, so a worker being replaced cannot be seen under a fixture browser. `worker-restart.spec.ts`
+  starts its own browser, drives the flow, disconnects, and then watches only the app's connected
+  browsers. It takes about a minute and a half.
+- The app's own log (`desktop-app.log`) lives in the scratch HOME and is attached to a failing test,
+  since its stdout is cut off when the app is stopped.
+- Playwright cannot see the offscreen document, where sync runs. A raw CDP connection watches the
+  extension's contexts instead; a failing test gets its lines as `extension.log`, beside the
+  desktop's `desktop-sync.log`.
+
+**Not covered:** Firefox, Windows and Linux, and an older build on either side. To try main's
+extension against this app, build it in a worktree and load its `dist-chromium` by hand.
 
 ---
 

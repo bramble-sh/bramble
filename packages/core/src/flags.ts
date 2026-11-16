@@ -162,10 +162,13 @@ export const CAPABILITIES = {
 		ios: true,
 		desktop: true,
 	},
-	// Separate "lock when the OS screen locks" toggle. Extension only: mobile locks on app
-	// backgrounding via the auto-lock setting, with no distinct screen-lock signal. See issue #6.
+	// The "Immediate" auto-lock: lock when the last popup closes (extension) or on backgrounding
+	// (mobile). Desktop has no such moment: it lives in the tray, and its panel only works unlocked.
+	immediateAutoLock: { extension: true, mobile: true, desktop: false },
+	// Separate "lock when the OS screen locks" toggle. Chromium only: Firefox's idle API never
+	// reports "locked", and mobile locks on app backgrounding via the auto-lock setting. See issue #6.
 	// Desktop OSes emit a real screen-lock signal, but nothing subscribes to it yet.
-	lockOnScreenLock: { extension: true, mobile: false, desktop: false },
+	lockOnScreenLock: { chromium: true, firefox: false, android: false, ios: false, desktop: false },
 	// SIMULTANEOUS multi-vault sync: several vaults each syncing on their own connection at once.
 	// Extension only. Mobile is single-active - its sync-manager targets the active vault's namespaced
 	// keys, and only the vault you're in syncs. This flag no longer gates any UI (join + per-vault

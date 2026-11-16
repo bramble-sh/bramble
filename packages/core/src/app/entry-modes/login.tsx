@@ -22,7 +22,7 @@ import {
 import { useEffect, useMemo, useState } from "react";
 import { useFieldArray, useFormContext } from "react-hook-form";
 import type { SubdomainMatchMode } from "../../adapters/autofill";
-import { AliasError } from "../../aliases";
+import { aliasErrorMessage, aliasSiteOf } from "../../aliases";
 import { usePlatform } from "../../context/PlatformContext";
 import { useAliasProvider } from "../../hooks/useAliasProvider";
 import { usePrefs } from "../../hooks/usePrefs";
@@ -143,32 +143,13 @@ function LoginFields({ initialBreach }: EntryFieldsProps) {
 			// The site the alias is for, so it is identifiable in the provider's dashboard later and,
 			// on SimpleLogin, legible in the address itself. The first URL is the entry's own idea of
 			// where it is used; a name that is not a URL tells us nothing a provider can use.
-			const first = getValues("urls")?.[0]?.value?.trim();
-			let site: string | undefined;
-			try {
-				site = first
-					? new URL(/^https?:/i.test(first) ? first : `https://${first}`).hostname
-					: undefined;
-			} catch {
-				site = undefined;
-			}
-			setValue("username", await aliases.generate(site), {
+			setValue("username", await aliases.generate(aliasSiteOf(getValues("urls")?.[0]?.value)), {
 				shouldDirty: true,
 				shouldValidate: true,
 			});
 			setAliasState({ kind: "idle" });
 		} catch (e) {
-			setAliasState({
-				kind: "error",
-				// The provider's own words, when it gave any, are what say whether this is a bad key,
-				// a spent allowance or a plan that does not include aliases. Rendered as plain text.
-				message:
-					e instanceof AliasError && e.providerMessage
-						? `${e.message} ${e.providerMessage}`
-						: e instanceof Error
-							? e.message
-							: String(e),
-			});
+			setAliasState({ kind: "error", message: aliasErrorMessage(e) });
 		}
 	};
 
@@ -509,7 +490,7 @@ function ToggleRow({ title, subtitle, checked, onChange }: ToggleRowProps) {
 				onClick={() => onChange(!checked)}
 				aria-pressed={checked}
 				className={`relative shrink-0 w-11 h-6 rounded-full border transition-all ${
-					checked ? "bg-primary border-primary/20" : "bg-muted border-border"
+					checked ? "bg-primary border-primary/20" : "bg-muted border-input-border"
 				}`}
 			>
 				<span
@@ -754,7 +735,7 @@ function LoginDetail({ entry, copied, copy }: EntryDetailBodyProps) {
 								copied={copied}
 								copyName={copyName}
 								onCopy={() => copy(copyName, url)}
-								extraAction={href && <OpenWebsiteLink href={href} />}
+								extraAction={href && <OpenWebsiteLink href={href} entryId={entry.id} />}
 							>
 								<div className="flex items-center gap-2 text-sm">
 									<Globe className="w-3.5 h-3.5 text-muted-foreground shrink-0" />
@@ -830,6 +811,16 @@ function LoginDetail({ entry, copied, copy }: EntryDetailBodyProps) {
 	);
 }
 
+/** A page's host without "www.", or "" when there is no usable URL. */
+function siteName(url: string | undefined): string {
+	if (!url) return "";
+	try {
+		return new URL(url).hostname.replace(/^www\./, "");
+	} catch {
+		return "";
+	}
+}
+
 export const loginMode: EntryMode = {
 	type: "login",
 	get label() {
@@ -841,8 +832,8 @@ export const loginMode: EntryMode = {
 	icon: Globe,
 
 	emptyForm: ({ defaultUrl }) => ({
-		name: "",
-		// Seed with the active tab's URL when launched from a page, else start empty.
+		// Seeded from the active tab when launched from a page: its URL, and its host as the name.
+		name: siteName(defaultUrl),
 		urls: defaultUrl ? [{ value: defaultUrl }] : [],
 		username: "",
 		password: "",
@@ -936,6 +927,6 @@ export const loginMode: EntryMode = {
 	searchText: (entry) => {
 		const login = entry as LoginEntry;
 		// Include every URL so search hits on any covered site, not just the first.
-		return `${login.name} ${login.username} ${login.urls.join(" ")}`.toLowerCase();
+		return `${login.username} ${login.urls.join(" ")}`.toLowerCase();
 	},
 };

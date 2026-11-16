@@ -26,6 +26,7 @@ import {
 } from "@core/index";
 import { blobArrived } from "@core/sync/blob-arrivals";
 import { answerBlobStatus } from "@core/sync/blob-status";
+import { addDevice, canonicalRosterEntry, mayEnroll, RosterEntrySchema } from "@core/sync/roster";
 import { syncKeyFor, vaultSyncGroups } from "@core/sync/sync-keys";
 import {
 	type BlobSyncSession,
@@ -34,6 +35,7 @@ import {
 } from "@core/sync/transport/blob-sync";
 import { startEnroll } from "@core/sync/transport/enroll-host";
 import type { MeshSession } from "@core/sync/transport/peer-session";
+import { relayOrDefault } from "@core/sync/transport/relay-url";
 import { startRosterSync } from "@core/sync/transport/roster-sync";
 import { parseRegistry, VAULT_REGISTRY_KEY } from "@core/vault/vault-registry";
 import { mobileCrypto } from "../adapters/crypto";
@@ -44,7 +46,6 @@ import { nativeSyncCrypto, type SyncCrypto } from "../native-crypto";
 import { secureStorage } from "../secure-storage";
 import { loadWasm } from "../wasm-loader";
 
-const DEFAULT_RELAY = "wss://bramble-relay.flythenimbus.workers.dev";
 const GROUP_KEY = "sync.group";
 const RELAY_KEY = "sync.relay";
 const ICE_KEY = "sync.iceUrl";
@@ -182,23 +183,25 @@ export async function syncAdmissionSign(
 	return wasm.roster_admission_sign(password, saltB64, canonical);
 }
 
-const statusSubs = new Set<(s: string) => void>();
+const statusSubs = new Set<(s: string, at: number) => void>();
 const eventSubs = new Set<(e: SyncEvent) => void>();
 // Ring buffer of recent status so a panel that mounts after sync started (e.g. it
 // starts on unlock, before Settings is opened) still shows the current state.
-const statusHistory: string[] = [];
+const statusHistory: { status: string; at: number }[] = [];
 const report = (s: string) => {
-	statusHistory.push(s);
+	const at = Date.now();
+	statusHistory.push({ status: s, at });
 	if (statusHistory.length > 50) statusHistory.shift();
-	for (const cb of statusSubs) cb(s);
+	for (const cb of statusSubs) cb(s, at);
 };
 const emit = (e: SyncEvent) => {
 	for (const cb of eventSubs) cb(e);
 };
 
-export function onSyncStatus(cb: (s: string) => void): () => void {
+/** Each line comes with the epoch ms it was logged at, replayed ones included. */
+export function onSyncStatus(cb: (s: string, at: number) => void): () => void {
 	statusSubs.add(cb);
-	for (const s of statusHistory) cb(s); // replay recent lines to a fresh subscriber
+	for (const line of statusHistory) cb(line.status, line.at); // replay recent lines to a fresh subscriber
 	return () => statusSubs.delete(cb);
 }
 export function onSyncEvent(cb: (e: SyncEvent) => void): () => void {
@@ -252,9 +255,14 @@ export async function startEnrollInvite(opts: {
 	entries: EntriesPayload;
 	passwordCheck?: { saltB64: string; slotIdB64: string; verifierB64: string };
 	recoverySlots?: WireRecoverySlot[];
+	/** Lets this module admit the joiner itself rather than relying on the UI. See admitJoiner. */
+	admission?: Admission;
 }): Promise<void> {
 	const wasm = await loadSyncCrypto();
 	const { privateKey, publicKey } = await deviceKeypair();
+	// Pinned now, like the VEK below: the roster this enrollment writes to is the vault being
+	// shared, not whichever one is active by the time the joiner arrives.
+	const vaultId = await activeVaultId();
 	// Capture the VEK NOW, while the user is demonstrably in the vault they're sharing. An invite
 	// stays open for as long as the QR code is up, and the key here is process-global: reading it
 	// at send time (the old ambient export_vek() fallback in sendBundle) would ship whichever vault
@@ -290,8 +298,59 @@ export async function startEnrollInvite(opts: {
 		devicePrivB64: privateKey,
 		wasm,
 		report,
-		onEnrolled: (entryJson) => emit({ kind: "enrolled", entryJson }),
+		// Roster the joiner here FIRST, then tell the UI (it makes the same write), then start sync.
+		// Sync starts on unlock, and only for a vault already in a group; a first pairing is what
+		// makes the group, so without this nothing synced until the next lock and unlock.
+		onEnrolled: (entryJson) => {
+			void (async () => {
+				if (vaultId) await admitJoiner(vaultId, opts.admission, entryJson);
+				emit({ kind: "enrolled", entryJson });
+				await maybeStartRosterSync();
+			})();
+		},
 	});
+}
+
+/** The inviter's material for admitting a joiner: a re-entered password and who is admitting. */
+interface Admission {
+	password: string;
+	saltB64: string;
+	adminId: string;
+}
+
+/**
+ * Admission-sign a freshly joined device and add it to this vault's roster, as the desktop app's
+ * host does. Idempotent with the UI's own write: Ed25519 is deterministic over the same canonical
+ * entry and the roster merge is a union. Reported, not thrown: the enrollment itself succeeded.
+ */
+async function admitJoiner(
+	vaultId: string,
+	admission: Admission | undefined,
+	entryJson: string,
+): Promise<void> {
+	try {
+		const entry = RosterEntrySchema.parse(JSON.parse(entryJson));
+		const admitted = admission
+			? {
+					...entry,
+					admission: {
+						by: admission.adminId,
+						sig: await syncAdmissionSign(
+							admission.password,
+							admission.saltB64,
+							canonicalRosterEntry(entry),
+						),
+					},
+				}
+			: entry;
+		const key = syncKeyFor(GROUP_KEY, vaultId);
+		const group = await mobileStorage.getMeta<GroupConfig>(key);
+		if (!group || !mayEnroll(group.roster, admitted)) return;
+		await mobileStorage.setMeta(key, { ...group, roster: addDevice(group.roster, admitted) });
+		emit({ kind: "roster" });
+	} catch (e) {
+		report(`sync: could not add the new device to the roster (${(e as Error).message})`);
+	}
 }
 
 export async function startEnrollJoin(opts: {
@@ -422,7 +481,7 @@ async function startRoster(): Promise<void> {
 	const group = await mobileStorage.getMeta<GroupConfig>(groupMetaKey);
 	if (!group?.groupKey) return; // not enrolled in a group yet
 	const { privateKey, publicKey } = await deviceKeypair();
-	const relay = (await mobileStorage.getMeta<string>(RELAY_KEY)) ?? DEFAULT_RELAY;
+	const relay = relayOrDefault(await mobileStorage.getMeta<string>(RELAY_KEY));
 	const iceUrl = (await mobileStorage.getMeta<string>(ICE_KEY)) ?? "";
 	const wasm = await loadSyncCrypto();
 	rosterSession?.stop();
@@ -520,13 +579,25 @@ async function startRoster(): Promise<void> {
 	}
 }
 
+/** The latest start. `rosterSession` is only set at the end of one, so a restart waits on this. */
+let lastStart: Promise<void> = Promise.resolve();
+
 async function maybeStartRosterSync(): Promise<void> {
 	if (rosterSession) return; // already running
-	try {
-		await startRoster();
-	} catch (e) {
-		report(`sync error: ${(e as Error).message}`);
-	}
+	const run = startRoster().catch((e) => report(`sync error: ${(e as Error).message}`));
+	lastStart = run;
+	await run;
+}
+
+/**
+ * "Sync now": what an unlock does, without the lock. Every peer is dropped and found again. A start
+ * still under way is let finish first, so its session is the one replaced rather than kept.
+ */
+export async function restartSync(): Promise<void> {
+	if (await mobileCrypto.isLocked()) throw new Error("the vault is locked");
+	await lastStart;
+	stopRosterSync();
+	await maybeStartRosterSync();
 }
 
 function stopRosterSync(): void {

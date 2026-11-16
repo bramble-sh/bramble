@@ -13,15 +13,67 @@ const h = vi.hoisted(() => ({
 	held: false,
 	/** Every permissions call, so the tests can assert what was asked for, not just that it ran. */
 	calls: [] as { fn: string; arg: unknown }[],
+	/** What the background answers every message with. */
+	reply: { ok: true } as { ok: boolean; error?: string; data?: unknown },
+	/** Whether this page has the connectNative binding, so it can lend the background a pipe. */
+	binding: false,
+	/** Every message sent to the background, in order. */
+	sent: [] as Record<string, unknown>[],
+	/** The relay ports this page opened to lend a pipe, by name. */
+	relays: [] as string[],
+	/** How many lent relay ports this page closed. */
+	relaysClosed: 0,
+	/** Each relay port's listener, to speak as the background on it. */
+	relayListeners: [] as ((message: unknown) => void)[],
+	/** Whether the background says it cannot open a pipe of its own. */
+	needed: true,
+	/** Whether the background wants a pipe for its held link. */
+	wanted: false,
+	/** What this page listens to from the rest of the extension. */
+	listeners: [] as ((message: { type?: string }) => void)[],
 }));
 
-// Deliberately no `connectNative` on this mock: the gate must not test for the binding, which is
-// stale in both directions across a grant or a revoke.
+// No `connectNative` on this mock unless a case turns the binding on: the gate must not test for
+// it, which is stale in both directions across a grant or a revoke.
 vi.mock("./platform-api", () => ({
 	api: {
 		runtime: {
 			getManifest: () => ({ permissions: h.permissions, optional_permissions: h.optional }),
-			sendMessage: async () => ({ ok: true }),
+			onMessage: {
+				addListener: (cb: (message: { type?: string }) => void) => h.listeners.push(cb),
+			},
+			sendMessage: async (msg: Record<string, unknown>) => {
+				h.sent.push(msg);
+				// Asked before lending; the background cannot open its own pipe here.
+				if (msg.type === "DESKTOP_LINK_TRANSPORT_NEEDED") return { ok: true, data: h.needed };
+				if (msg.type === "DESKTOP_LINK_PIPE_WANTED") return { ok: true, data: h.wanted };
+				return h.reply;
+			},
+			get connectNative() {
+				if (!h.binding) return undefined;
+				return () => ({
+					postMessage: () => {},
+					onMessage: { addListener: () => {} },
+					onDisconnect: { addListener: () => {} },
+					disconnect: () => {},
+				});
+			},
+			connect: ({ name }: { name: string }) => {
+				h.relays.push(name);
+				return {
+					postMessage: () => {},
+					// The background acks a lent port as soon as it registers it.
+					onMessage: {
+						addListener: (cb: (m: unknown) => void) => {
+							h.relayListeners.push(cb);
+							queueMicrotask(() => cb({ ready: true }));
+						},
+					},
+					disconnect: () => {
+						h.relaysClosed++;
+					},
+				};
+			},
 		},
 		permissions: {
 			contains: async (arg: unknown) => {
@@ -53,6 +105,14 @@ beforeEach(() => {
 	h.optional = undefined;
 	h.held = false;
 	h.calls = [];
+	h.reply = { ok: true };
+	h.binding = false;
+	h.sent = [];
+	h.relays = [];
+	h.relaysClosed = 0;
+	h.needed = true;
+	h.wanted = false;
+	h.listeners = [];
 });
 
 /** The shipping Chromium manifest: declared optional, so it is asked for at connect time. */
@@ -148,5 +208,201 @@ describe("the permission sub-adapter", () => {
 
 		await expect(link?.permission?.granted()).resolves.toBe(false);
 		expect(h.calls).toEqual([{ fn: "contains", arg: { permissions: ["nativeMessaging"] } }]);
+	});
+});
+
+describe("a failure the background reports", () => {
+	it("reads as the background's words, without the prefix its router adds", async () => {
+		// The router sends back String(err), so every refusal reached the screen as "Error: ...".
+		h.reply = { ok: false, error: "Error: The desktop app did not approve the link." };
+		const link = await load();
+
+		await expect(link?.confirm?.("L1", true)).rejects.toThrow(
+			/^The desktop app did not approve the link\.$/,
+		);
+	});
+});
+
+// The app reads a connection as one session. Settings asks for the app's key while the link flow
+// asks for its vault, and on one shared pipe the second hello broke the first: no invite came.
+describe("a pipe lent to the background", () => {
+	/** The lent pipe each request named, as the relay port name it would match. */
+	const named = (type: string) =>
+		h.sent.filter((m) => m.type === type).map((m) => `link-native-proxy:${String(m.via)}`);
+
+	it("is its own for each request, even when two run at once", async () => {
+		h.binding = true;
+		h.reply = { ok: true, data: null };
+		const link = await load();
+
+		await Promise.all([link?.vaultSummary?.(), link?.desktopSyncKey?.()]);
+
+		expect(new Set(h.relays).size).toBe(2);
+		expect([...named("DESKTOP_LINK_VAULT_SUMMARY"), ...named("DESKTOP_LINK_SYNC_KEY")]).toEqual(
+			expect.arrayContaining(h.relays),
+		);
+	});
+
+	it("is named by the emoji link's start, which keeps it until the answer", async () => {
+		h.binding = true;
+		h.reply = { ok: true, data: { legacy: true } };
+		const link = await load();
+
+		await link?.start?.();
+
+		expect(named("DESKTOP_LINK_START")).toEqual(h.relays);
+	});
+
+	it("is lent for the emoji link even to a background with a pipe of its own", async () => {
+		// The link in progress then lives exactly as long as this page, which runs its vault copy:
+		// the app forgets its half when the page closes, and so does the background.
+		h.binding = true;
+		h.needed = false;
+		h.reply = { ok: true, data: { id: "L1", sas: { emoji: [], digits: "" } } };
+		const link = await load();
+
+		await link?.start?.();
+
+		expect(h.relays).toHaveLength(1);
+		expect(named("DESKTOP_LINK_START")).toEqual(h.relays);
+	});
+});
+
+// A worker from before the permission grant takes a minute to be replaced. A page that is open can
+// carry the link until then, so sync comes back the moment someone looks.
+describe("lending the worker a pipe for its link", () => {
+	const lentFor = () => h.sent.filter((m) => m.type === "DESKTOP_LINK_LEND_PIPE");
+
+	it("lends one when this page opens, if the worker wants it", async () => {
+		h.binding = true;
+		h.wanted = true;
+		const { lendPipeToWorker } = await import("./desktop-link");
+
+		lendPipeToWorker();
+
+		await vi.waitFor(() => expect(lentFor()).toHaveLength(1));
+		expect(h.relays).toEqual([`link-native-proxy:${String(lentFor()[0]?.via)}`]);
+	});
+
+	it("opens nothing when it does not, which is every worker that can open its own", async () => {
+		h.binding = true;
+		const { lendPipeToWorker } = await import("./desktop-link");
+
+		lendPipeToWorker();
+		await new Promise((r) => setTimeout(r, 0));
+
+		expect(h.relays).toEqual([]);
+		expect(lentFor()).toEqual([]);
+	});
+
+	it("lends another when the worker loses the one it had, and closes that one", async () => {
+		h.binding = true;
+		h.wanted = true;
+		vi.resetModules();
+		const { lendPipeToWorker } = await import("./desktop-link");
+		lendPipeToWorker();
+		await vi.waitFor(() => expect(lentFor()).toHaveLength(1));
+
+		for (const listener of h.listeners) listener({ type: "DESKTOP_LINK_PIPE_LOST" });
+
+		await vi.waitFor(() => expect(lentFor()).toHaveLength(2));
+		expect(h.relaysClosed).toBe(1);
+	});
+
+	it("lets a pipe go when the background is done with it, once", async () => {
+		h.binding = true;
+		h.wanted = true;
+		h.relayListeners = [];
+		vi.resetModules();
+		const { lendPipeToWorker } = await import("./desktop-link");
+		lendPipeToWorker();
+		await vi.waitFor(() => expect(lentFor()).toHaveLength(1));
+
+		h.relayListeners[0]?.({ release: true });
+		expect(h.relaysClosed).toBe(1);
+
+		// Lending again closes what it held, which has gone already.
+		for (const listener of h.listeners) listener({ type: "DESKTOP_LINK_PIPE_LOST" });
+		await vi.waitFor(() => expect(lentFor()).toHaveLength(2));
+		expect(h.relaysClosed).toBe(1);
+	});
+
+	it("keeps it apart from the pipe an emoji link is running on", async () => {
+		h.binding = true;
+		h.wanted = true;
+		h.relayListeners = [];
+		vi.resetModules();
+		const { lendPipeToWorker, extensionDesktopLink } = await import("./desktop-link");
+		lendPipeToWorker();
+		await vi.waitFor(() => expect(lentFor()).toHaveLength(1));
+		h.reply = { ok: true, data: { id: "L1", sas: { emoji: [], digits: "1" } } };
+
+		await extensionDesktopLink?.start?.();
+		expect(h.relaysClosed).toBe(0);
+
+		h.reply = { ok: true };
+		for (const listener of h.listeners) listener({ type: "DESKTOP_LINK_PIPE_LOST" });
+		await vi.waitFor(() => expect(lentFor()).toHaveLength(2));
+		// The old lent pipe, and not the link's.
+		expect(h.relaysClosed).toBe(1);
+		await extensionDesktopLink?.cancel?.("L1");
+		expect(h.relaysClosed).toBe(2);
+	});
+
+	it("ignores everything else the extension says", async () => {
+		h.binding = true;
+		const { lendPipeToWorker } = await import("./desktop-link");
+		lendPipeToWorker();
+		await new Promise((r) => setTimeout(r, 0));
+		const asked = h.sent.length;
+
+		for (const listener of h.listeners) listener({ type: "SYNC_EVENT" });
+		await new Promise((r) => setTimeout(r, 0));
+
+		expect(h.sent.length).toBe(asked);
+	});
+});
+
+// A pairing ends with the link attached to a vault, or with nothing kept on either side.
+describe("a link per vault", () => {
+	const sentTypes = () =>
+		h.sent.filter((m) => m.type !== "DESKTOP_LINK_TRANSPORT_NEEDED").map((m) => ({ ...m }));
+
+	it("attaches the link to the vault the flow ended in", async () => {
+		h.reply = { ok: true, data: true };
+		const link = await load();
+
+		await expect(link?.attach?.("v2")).resolves.toBe(true);
+		expect(sentTypes()).toEqual([{ type: "DESKTOP_LINK_ATTACH", vaultId: "v2" }]);
+	});
+
+	it("lets a link go, closing the pipe this page lent for it", async () => {
+		h.binding = true;
+		h.reply = { ok: true, data: { id: "L1", sas: { emoji: [], digits: "" } } };
+		const link = await load();
+		await link?.start?.();
+		await link?.confirm?.("L1", true);
+		expect(h.relaysClosed).toBe(0);
+
+		await link?.abandon?.();
+
+		expect(sentTypes().at(-1)).toEqual({ type: "DESKTOP_LINK_ABANDON" });
+		expect(h.relaysClosed).toBe(1);
+	});
+
+	it("asks the background to forget a deleted vault's link", async () => {
+		h.reply = { ok: true };
+		const link = await load();
+
+		await link?.forgetVault?.("v3");
+
+		expect(sentTypes()).toEqual([{ type: "DESKTOP_LINK_FORGET_VAULT", vaultId: "v3" }]);
+	});
+
+	it("says how many vaults still have a link after one is disconnected", async () => {
+		h.reply = { ok: true, data: { remaining: 1 } };
+		const link = await load();
+
+		await expect(link?.unlink()).resolves.toEqual({ remaining: 1 });
 	});
 });

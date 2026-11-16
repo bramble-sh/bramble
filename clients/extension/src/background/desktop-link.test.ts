@@ -1,3 +1,4 @@
+import { linkNonceCommit } from "@core/sync/link-sas";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 // The held-open link to the desktop app, which sync needs and delegation did not.
@@ -35,8 +36,36 @@ const h = vi.hoisted(() => ({
 	/** What the app answers a caps request with; null for an app from before caps, which
 	 * answers an op it does not know with an error. */
 	appCaps: ["files"] as string[] | null,
+	/** Whether the app offers sync again when asked (`syncRestart`); an older one does not know it. */
+	appRestarts: false,
+	/** The app's sync identity, answered to `syncIdentity`; null for an app that does not answer. */
+	appIdentity: null as string | null,
+	/** The refusal the app seals after a handshake, in place of any answer; null to answer. */
+	refuseWith: null as string | null,
 	/** A seal whose plaintext contains this takes a while, as a busy crypto host's might. */
 	slowSeal: null as string | null,
+	/** What was written to storage.local, in order. */
+	setCalls: [] as Record<string, unknown>[],
+	/** Keys removed from storage.local, in order. */
+	removed: [] as string[],
+	linkCloses: 0,
+	/** The vault open in the browser. */
+	activeVault: "v1" as string | null,
+	/** What the app answers `linkComplete` with over a lent pipe. */
+	linkCompleteAnswer: { ok: true } as Record<string, unknown>,
+	/** Vault metadata the background reads, by key (the vault registry). */
+	meta: {} as Record<string, unknown>,
+	/** Metadata keys whose read fails. */
+	metaFails: new Set<string>(),
+	/** How often the permission was checked: an API call, which resets the worker's idle timer. */
+	permissionChecks: 0,
+	/** Alarms armed, by name. */
+	alarms: new Map<string, unknown>(),
+	alarmsCreated: 0,
+	/** What this worker told the extension's other contexts, in order. */
+	broadcast: [] as { type?: string }[],
+	/** How many times sync was told the link has gone. */
+	linkDowns: 0,
 }));
 
 /** The native port chrome.runtime.connectNative hands back. */
@@ -47,10 +76,25 @@ const nativePort = () => {
 			h.posted.push(msg);
 			// The app answers caps as soon as the link is up, as socket.rs does.
 			const plain = typeof msg.sealed === "string" ? h.sealed.get(msg.sealed) : undefined;
+			if (plain && h.refuseWith) {
+				const refusal = { ok: false, error: h.refuseWith };
+				queueMicrotask(() => deliver({ sealed: `sealed:${JSON.stringify(refusal)}` }));
+				return;
+			}
 			if (plain && JSON.parse(plain).op === "caps") {
 				const answer = h.appCaps
 					? { ok: true, caps: h.appCaps }
 					: { ok: false, error: "bad request: unknown variant `caps`" };
+				queueMicrotask(() => deliver({ sealed: `sealed:${JSON.stringify(answer)}` }));
+			}
+			if (plain && JSON.parse(plain).op === "syncIdentity" && h.appIdentity) {
+				const answer = { ok: true, identity: h.appIdentity };
+				queueMicrotask(() => deliver({ sealed: `sealed:${JSON.stringify(answer)}` }));
+			}
+			if (plain && JSON.parse(plain).op === "syncRestart") {
+				const answer = h.appRestarts
+					? { ok: true }
+					: { ok: false, error: "bad request: unknown variant `syncRestart`" };
 				queueMicrotask(() => deliver({ sealed: `sealed:${JSON.stringify(answer)}` }));
 			}
 		},
@@ -71,6 +115,9 @@ vi.mock("../platform-api", () => ({
 				return h.hasBinding ? nativePort : undefined;
 			},
 			lastError: undefined,
+			sendMessage: async (message: { type?: string }) => {
+				h.broadcast.push(message);
+			},
 			// The module now guards its proxy port with isExtensionSender, which resolves the
 			// extension origin at import time. An https stand-in, not a real chrome-extension://
 			// URL: Node gives non-special schemes an opaque "null" origin, which would reject
@@ -81,8 +128,18 @@ vi.mock("../platform-api", () => ({
 				addListener: (cb: (port: unknown) => void) => h.onConnect.push(cb),
 			},
 		},
+		alarms: {
+			create: async (name: string, info: unknown) => {
+				h.alarmsCreated++;
+				h.alarms.set(name, info);
+			},
+			clear: async (name: string) => h.alarms.delete(name),
+		},
 		permissions: {
-			contains: async () => h.permitted,
+			contains: async () => {
+				h.permissionChecks++;
+				return h.permitted;
+			},
 			onRemoved: {
 				addListener: (cb: (p: { permissions?: string[] }) => void) =>
 					h.onPermissionRemoved.push(cb),
@@ -91,8 +148,14 @@ vi.mock("../platform-api", () => ({
 		storage: {
 			local: {
 				get: async (key: string) => ({ [key]: h.stored[key] }),
-				set: async () => {},
-				remove: async () => {},
+				set: async (v: Record<string, unknown>) => {
+					h.setCalls.push(v);
+					Object.assign(h.stored, v);
+				},
+				remove: async (key: string) => {
+					h.removed.push(key);
+					delete h.stored[key];
+				},
 			},
 		},
 	},
@@ -111,6 +174,10 @@ vi.mock("./offscreen-client", () => ({
 				return { ok: true, data: { privateKey: "priv", publicKey: "pub" } };
 			case "LINK_ENROLL_INITIATOR":
 				return { ok: true, data: { sessionId: 9, message: "xx1" } };
+			case "LINK_PAIR_INITIATOR":
+				return { ok: true, data: { sessionId: 11, message: "xl1" } };
+			case "LINK_HANDSHAKE_HASH":
+				return { ok: true, data: "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8=" };
 			case "LINK_REMOTE_STATIC":
 				return { ok: true, data: "app-pub" };
 			// The KK path ignores this; the pairing path reads `message` off it.
@@ -131,10 +198,25 @@ vi.mock("./offscreen-client", () => ({
 				return { ok: true, data: plain };
 			}
 			case "LINK_CLOSE":
+				h.linkCloses++;
+				return { ok: true, data: undefined };
+			case "LINK_DOWN":
+				h.linkDowns++;
 				return { ok: true, data: undefined };
 			default:
 				return { ok: false, error: `unexpected ${msg.type}` };
 		}
+	},
+}));
+
+vi.mock("./vek-store", () => ({ getActiveVaultId: () => h.activeVault }));
+
+vi.mock("../storage", () => ({
+	extensionStorage: {
+		getMeta: async (key: string) => {
+			if (h.metaFails.has(key)) throw new Error("storage read failed");
+			return h.meta[key] ?? null;
+		},
 	},
 }));
 
@@ -174,9 +256,29 @@ async function load() {
 	h.hasBinding = true;
 	h.sealed.clear();
 	h.appCaps = ["files"];
+	h.appRestarts = false;
+	h.appIdentity = null;
+	h.refuseWith = null;
 	h.slowSeal = null;
+	h.activeVault = "v1";
+	h.linkCompleteAnswer = { ok: true };
+	h.removed.length = 0;
+	h.metaFails.clear();
+	h.permissionChecks = 0;
+	h.alarms.clear();
+	h.alarmsCreated = 0;
+	h.broadcast.length = 0;
+	h.linkDowns = 0;
+	h.meta = {
+		"vault.registry": {
+			vaults: [
+				{ id: "v1", label: "", createdAt: 1 },
+				{ id: "v2", label: "", createdAt: 2 },
+			],
+		},
+	};
 	h.stored = {
-		desktopLink: {
+		"desktopLink:v1": {
 			privateKey: "priv",
 			publicKey: "pub",
 			appPublicKey: "app-pub",
@@ -209,6 +311,65 @@ describe("the held sync link", () => {
 		await vi.waitFor(() => expect(frames).toEqual(["from-app"]));
 	});
 
+	it("keeps the vault copy's frames away from sync", async () => {
+		const mod = await load();
+		const got: [string, string | undefined][] = [];
+		const opening = mod.openSyncLink((f, room) => got.push([f, room]));
+		await vi.waitFor(() => expect(h.onMessage.length).toBeGreaterThan(0));
+		completeHandshake();
+		expect(await opening).toBe(true);
+
+		deliver({ sealed: `sealed:${JSON.stringify({ sync: "e", room: "enroll" })}` });
+		pushSync("s");
+
+		await vi.waitFor(() => expect(got).toEqual([["s", undefined]]));
+	});
+
+	it("sends a sync frame tagged with its room", async () => {
+		const mod = await load();
+		await open(mod, []);
+		h.posted.length = 0;
+
+		expect(await mod.sendSyncFrame("x", "enroll")).toBe(true);
+
+		const sent = h.posted.at(-1) as { sealed: string };
+		expect(JSON.parse(h.sealed.get(sent.sealed) ?? "")).toEqual({
+			op: "sync",
+			frame: "x",
+			room: "enroll",
+		});
+	});
+
+	it("routes an enroll frame even when sync is not running", async () => {
+		const mod = await load();
+		const got: string[] = [];
+		mod.setEnrollFrameSink((f) => got.push(f));
+		const opening = mod.openDesktopLink();
+		await vi.waitFor(() => expect(h.onMessage.length).toBeGreaterThan(0));
+		completeHandshake();
+		expect(await opening).toBe(true);
+
+		deliver({ sealed: `sealed:${JSON.stringify({ sync: "e", room: "enroll" })}` });
+
+		await vi.waitFor(() => expect(got).toEqual(["e"]));
+	});
+
+	it("asks the app what its vault holds, and reads a refusal as unknown", async () => {
+		const mod = await load();
+		await open(mod, []);
+
+		const asked = mod.desktopVaultSummary();
+		await vi.waitFor(() => expect(postedOps()).toContain("vaultSummary"));
+		const summary = { name: "Home", empty: false, entries: 380 };
+		deliver({ sealed: `sealed:${JSON.stringify({ ok: true, summary })}` });
+		expect(await asked).toEqual(summary);
+
+		const refused = mod.desktopVaultSummary();
+		await vi.waitFor(() => expect(postedOps().filter((o) => o === "vaultSummary")).toHaveLength(2));
+		deliver({ sealed: `sealed:${JSON.stringify({ ok: false, error: "no summary" })}` });
+		expect(await refused).toBeNull();
+	});
+
 	it("does not answer a request with a frame the app pushed", async () => {
 		// The bug this exists for: the pushed frame arrives between the request and its answer.
 		// Handed back as the answer, every later request would return the previous one's result.
@@ -224,6 +385,65 @@ describe("the held sync link", () => {
 
 		expect(await asked).toEqual({ ok: true, matches: [] });
 		expect(frames).toEqual(["interleaved"]);
+	});
+
+	it("keeps a frame the app pushes before this end has finished the handshake", async () => {
+		// The app may push the moment the link is up, before this side has read the handshake's
+		// last message. Dropping that frame put Noise one frame out of step, and nothing on the link
+		// could be opened again: the vault summary and invite timed out on a link that looked up.
+		const mod = await load();
+		const frames: string[] = [];
+		const opening = mod.openSyncLink((f) => frames.push(f));
+		await vi.waitFor(() => expect(h.onMessage.length).toBeGreaterThan(0));
+		completeHandshake();
+		pushSync("early");
+
+		expect(await opening).toBe(true);
+		await vi.waitFor(() => expect(frames).toEqual(["early"]));
+	});
+
+	it("passes on whether the app has a backup target, and an older app simply doesn't say", async () => {
+		const mod = await load();
+		await open(mod, []);
+
+		const told = mod.desktopVaultSummary();
+		await vi.waitFor(() => expect(postedOps()).toContain("vaultSummary"));
+		deliver({
+			sealed: `sealed:${JSON.stringify({
+				ok: true,
+				summary: { name: "Home", empty: false, entries: 1, backupTargets: true },
+			})}`,
+		});
+		await expect(told).resolves.toMatchObject({ backupTargets: true });
+
+		const older = mod.desktopVaultSummary();
+		await vi.waitFor(() => expect(postedOps().filter((o) => o === "vaultSummary")).toHaveLength(2));
+		deliver({
+			sealed: `sealed:${JSON.stringify({
+				ok: true,
+				summary: { name: "Home", empty: false, entries: 1 },
+			})}`,
+		});
+		const answer = await older;
+		expect(answer?.backupTargets).toBeUndefined();
+	});
+
+	it("gives each of two overlapping requests its own answer", async () => {
+		// Sync asks for the app's identity while a page asks what its vault holds. One shared slot
+		// for "the request waiting" handed the first answer to the second asker, and the first
+		// timed out: sync took a vault summary for the app's key.
+		const mod = await load();
+		await open(mod, []);
+
+		const first = mod.askDesktop({ op: "vaultSummary" });
+		const second = mod.askDesktop({ op: "syncIdentity" });
+		await vi.waitFor(() => expect(postedOps()).toContain("vaultSummary"));
+		deliver({ sealed: `sealed:${JSON.stringify({ ok: true, summary: { name: "Home" } })}` });
+		await vi.waitFor(() => expect(postedOps()).toContain("syncIdentity"));
+		deliver({ sealed: `sealed:${JSON.stringify({ ok: true, identity: "app-key" })}` });
+
+		await expect(first).resolves.toMatchObject({ summary: { name: "Home" } });
+		await expect(second).resolves.toMatchObject({ identity: "app-key" });
 	});
 
 	it("keeps one connection open rather than one per request", async () => {
@@ -298,6 +518,54 @@ describe("the held sync link", () => {
 
 		expect(await opening).toBe(true);
 		expect(h.connects).toBe(1);
+	});
+
+	it("asks the app to offer sync again on a link held before sync, and keeps the link", async () => {
+		// The app offers a browser for sync when it connects, and refuses it while nothing here
+		// answers: a link opened to pair, before this browser had a vault. Starting afresh needs a
+		// pipe this worker can open, which one granted the permission this session cannot.
+		const mod = await load();
+		h.appRestarts = true;
+		const opening = mod.openDesktopLink();
+		await vi.waitFor(() => expect(h.onMessage.length).toBeGreaterThan(0));
+		completeHandshake();
+		await opening;
+		const before = { connects: h.connects, disconnects: h.disconnects };
+
+		expect(await mod.openSyncLink(() => {})).toBe(true);
+
+		expect(postedOps()).toContain("syncRestart");
+		expect(h.connects).toBe(before.connects);
+		expect(h.disconnects).toBe(before.disconnects);
+	});
+
+	it("starts a link held before sync afresh when the app cannot offer it again", async () => {
+		// An app from before `syncRestart` offers again only on a new connection, so sync starting
+		// on the old one waited forever.
+		const mod = await load();
+		const opening = mod.openDesktopLink();
+		await vi.waitFor(() => expect(h.onMessage.length).toBeGreaterThan(0));
+		completeHandshake();
+		await opening;
+		const before = { connects: h.connects, disconnects: h.disconnects };
+
+		const syncing = mod.openSyncLink(() => {});
+		await vi.waitFor(() => expect(h.connects).toBe(before.connects + 1));
+		completeHandshake();
+
+		expect(await syncing).toBe(true);
+		expect(h.disconnects).toBe(before.disconnects + 1);
+	});
+
+	it("keeps the link when sync was already running on it", async () => {
+		const mod = await load();
+		await open(mod, []);
+		const before = { connects: h.connects, disconnects: h.disconnects };
+
+		expect(await mod.openSyncLink(() => {})).toBe(true);
+
+		expect(h.connects).toBe(before.connects);
+		expect(h.disconnects).toBe(before.disconnects);
 	});
 
 	it("gives up on a request the app never answers", async () => {
@@ -442,21 +710,390 @@ describe("a browser with no desktop app", () => {
 	});
 });
 
+// Each vault in the browser has its own link, and the worker holds only the open vault's. See
+// docs/desktop-link-onboarding.md, piece 3.
+describe("a link per vault, over this worker's own pipe", () => {
+	const hellos = () => h.posted.filter((m) => m.kind === "hello").map((m) => m.publicKey);
+	const second = { privateKey: "priv-2", publicKey: "pub-2", appPublicKey: "app-pub", pairedAt: 2 };
+
+	it("holds the open vault's link, and the next vault's once that one opens", async () => {
+		const mod = await load();
+		h.stored["desktopLink:v2"] = second;
+		const opening = mod.openDesktopLink();
+		await vi.waitFor(() => expect(hellos()).toEqual(["pub"]));
+		completeHandshake();
+		expect(await opening).toBe(true);
+
+		h.activeVault = "v2";
+		mod.retargetLink("v2");
+		await vi.waitFor(() => expect(hellos()).toEqual(["pub", "pub-2"]));
+		completeHandshake();
+		await vi.waitFor(() => expect(mod.linkIsHeld()).toBe(true));
+
+		// A vault with no link of its own holds nothing.
+		h.activeVault = "v3";
+		mod.retargetLink("v3");
+		await vi.waitFor(() => expect(mod.linkIsHeld()).toBe(false));
+		expect(hellos()).toEqual(["pub", "pub-2"]);
+	});
+
+	it("holds, while locked, the link of the vault the browser would unlock into", async () => {
+		// Locking clears the open vault, and filling from the app while locked is the link's point.
+		const mod = await load();
+		h.stored["desktopLink:v2"] = second;
+		h.stored["vault.lastOpenedId"] = "v2";
+		h.activeVault = null;
+		const opening = mod.openDesktopLink();
+		await vi.waitFor(() => expect(hellos()).toEqual(["pub-2"]));
+		completeHandshake();
+
+		expect(await opening).toBe(true);
+		expect(mod.heldVault()).toBe("v2");
+	});
+
+	it("keeps holding the link through a lock", async () => {
+		const mod = await load();
+		h.stored["vault.lastOpenedId"] = "v1";
+		const opening = mod.openDesktopLink();
+		await vi.waitFor(() => expect(hellos()).toEqual(["pub"]));
+		completeHandshake();
+		await opening;
+
+		h.activeVault = null;
+		mod.retargetLink(null);
+		await new Promise((r) => setTimeout(r, 20));
+
+		expect(mod.heldVault()).toBe("v1");
+		expect(hellos()).toEqual(["pub"]);
+	});
+
+	it("drops the open vault's link when the app says, under the session, nothing there is linked to it", async () => {
+		const mod = await load();
+		h.refuseWith = "not linked to this app";
+		const opening = mod.openDesktopLink();
+		await vi.waitFor(() => expect(hellos()).toEqual(["pub"]));
+		completeHandshake();
+
+		expect(await opening).toBe(false);
+		await vi.waitFor(() => expect(h.stored["desktopLink:v1"]).toBeUndefined());
+	});
+
+	it("keeps it when the app only has another vault open", async () => {
+		const mod = await load();
+		h.refuseWith = "not linked to the open vault";
+		const opening = mod.openDesktopLink();
+		await vi.waitFor(() => expect(hellos()).toEqual(["pub"]));
+		completeHandshake();
+
+		expect(await opening).toBe(false);
+		expect(h.stored["desktopLink:v1"]).toBeDefined();
+	});
+
+	it("keeps it on a refusal that comes before any handshake, which anything could send", async () => {
+		// A second install, or a rewritten host manifest, answers the hello too. Only the app this
+		// browser paired with can tell it to drop a link, and only under the session.
+		const mod = await load();
+		const opening = mod.openDesktopLink();
+		await vi.waitFor(() => expect(hellos()).toEqual(["pub"]));
+		deliver({ ok: false, error: "not linked to this app" });
+
+		expect(await opening).toBe(false);
+		expect(h.stored["desktopLink:v1"]).toBeDefined();
+	});
+
+	it("holds the vault that opens during a connect, never the one it started for", async () => {
+		const mod = await load();
+		h.stored["desktopLink:v2"] = second;
+		const opening = mod.openDesktopLink();
+		await vi.waitFor(() => expect(hellos()).toEqual(["pub"]));
+
+		h.activeVault = "v2";
+		mod.retargetLink("v2");
+		await vi.waitFor(() => expect(hellos()).toEqual(["pub", "pub-2"]));
+		completeHandshake();
+		await opening;
+
+		await vi.waitFor(() => expect(mod.linkIsHeld()).toBe(true));
+		expect(mod.heldVault()).toBe("v2");
+	});
+
+	it("forgets the link the refusal was about, not the vault opened meanwhile", async () => {
+		const mod = await load();
+		h.stored["desktopLink:v2"] = second;
+		h.refuseWith = "not linked to this app";
+		const opening = mod.openDesktopLink();
+		await vi.waitFor(() => expect(hellos()).toEqual(["pub"]));
+		h.activeVault = "v2";
+		completeHandshake();
+		await opening;
+
+		await vi.waitFor(() => expect(h.stored["desktopLink:v1"]).toBeUndefined());
+		expect(h.stored["desktopLink:v2"]).toBe(second);
+	});
+
+	it("forgets a deleted vault's link, and lets go of it when it is the one held", async () => {
+		const mod = await load();
+		const opening = mod.openDesktopLink();
+		await vi.waitFor(() => expect(hellos()).toEqual(["pub"]));
+		completeHandshake();
+		await opening;
+
+		await mod.forgetVaultLink("v1");
+
+		expect(h.stored["desktopLink:v1"]).toBeUndefined();
+		expect(mod.linkIsHeld()).toBe(false);
+	});
+
+	it("disconnects one vault's link and says how many remain", async () => {
+		const mod = await load();
+		h.stored["desktopLink:v2"] = second;
+
+		await expect(mod.unlinkDesktop("v1")).resolves.toEqual({ remaining: 1 });
+		expect(h.stored["desktopLink:v2"]).toBe(second);
+		await expect(mod.unlinkDesktop("v2")).resolves.toEqual({ remaining: 0 });
+	});
+});
+
+// The relay needs the app's sync key to tell it apart: a browser and the app on one machine sync
+// over the link only, and without the key each announce starts a handshake the app refuses.
+describe("the app's sync key", () => {
+	async function connected(mod: Awaited<ReturnType<typeof load>>) {
+		h.appIdentity = "desk-identity";
+		const opening = mod.openDesktopLink();
+		await vi.waitFor(() => expect(h.onMessage.length).toBeGreaterThan(0));
+		completeHandshake();
+		await opening;
+	}
+	/** The pipe goes, and this worker cannot open another. */
+	const pipeGone = () => {
+		h.hasBinding = false;
+		for (const cb of h.onDisconnect) cb();
+	};
+
+	it("is still known with the pipe down, once the app has said it", async () => {
+		const mod = await load();
+		await connected(mod);
+		await expect(mod.desktopSyncKey()).resolves.toBe("desk-identity");
+
+		pipeGone();
+
+		await expect(mod.desktopSyncKey()).resolves.toBe("desk-identity");
+	});
+
+	it("is not known before the app has said it", async () => {
+		const mod = await load();
+		h.hasBinding = false;
+
+		await expect(mod.desktopSyncKey()).resolves.toBeNull();
+	});
+
+	it("goes with the link: after Disconnect there is no app on a link to tell apart", async () => {
+		const mod = await load();
+		await connected(mod);
+		await mod.desktopSyncKey();
+		pipeGone();
+
+		await mod.unlinkDesktop("v1");
+
+		await expect(mod.desktopSyncKey()).resolves.toBeNull();
+	});
+
+	it("leaves nothing behind when a deleted vault's link is forgotten", async () => {
+		const mod = await load();
+		await connected(mod);
+		await mod.desktopSyncKey();
+		expect(Object.keys(h.stored).filter((k) => k.startsWith("linkAppSyncKey:"))).toHaveLength(1);
+
+		await mod.forgetVaultLink("v1");
+
+		expect(Object.keys(h.stored).filter((k) => k.startsWith("linkAppSyncKey:"))).toEqual([]);
+	});
+
+	it("belongs to one link: another vault's is not taken for it", async () => {
+		const mod = await load();
+		await connected(mod);
+		await mod.desktopSyncKey();
+		pipeGone();
+		h.stored["desktopLink:v2"] = {
+			privateKey: "priv-2",
+			publicKey: "pub-2",
+			appPublicKey: "app-pub",
+			pairedAt: 2,
+		};
+		h.activeVault = "v2";
+
+		await expect(mod.desktopSyncKey()).resolves.toBeNull();
+	});
+});
+
+// An earlier build kept one link for the whole profile. It goes to the vault that syncs with the
+// app, which the app's sync identity in that vault's roster shows; with none, it goes.
+describe("the single link an earlier build kept", () => {
+	const legacy = { privateKey: "priv", publicKey: "pub", appPublicKey: "app-pub", pairedAt: 1 };
+	const roster = (...keys: string[]) => ({
+		roster: { devices: keys.map((publicKey) => ({ publicKey })) },
+	});
+
+	async function connectOnLegacy(mod: Awaited<ReturnType<typeof load>>) {
+		h.stored = { desktopLink: legacy };
+		const opening = mod.openDesktopLink();
+		await vi.waitFor(() => expect(h.onMessage.length).toBeGreaterThan(0));
+		completeHandshake();
+		return opening;
+	}
+
+	it("moves to the vault whose roster holds the app", async () => {
+		const mod = await load();
+		h.appIdentity = "desk-identity";
+		h.meta["sync.group:v1"] = roster("someone-else");
+		h.meta["sync.group:v2"] = roster("desk-identity");
+
+		expect(await connectOnLegacy(mod)).toBe(true);
+
+		await vi.waitFor(() => expect(h.stored["desktopLink:v2"]).toEqual(legacy));
+		expect(h.stored.desktopLink).toBeUndefined();
+	});
+
+	it("is dropped when no vault syncs with the app", async () => {
+		const mod = await load();
+		h.appIdentity = "desk-identity";
+		h.meta["sync.group:v1"] = roster("someone-else");
+
+		await connectOnLegacy(mod);
+
+		await vi.waitFor(() => expect(h.stored.desktopLink).toBeUndefined());
+		expect(Object.keys(h.stored).filter((k) => k.startsWith("desktopLink"))).toEqual([]);
+	});
+
+	it("waits for proof when more than one vault syncs with the app, then goes to the one that did", async () => {
+		// The app has one sync identity for all its vaults, so two rosters can hold it. The link is
+		// listed by one desktop vault only, and syncing over it is what shows which.
+		const mod = await load();
+		h.appIdentity = "desk-identity";
+		h.meta["sync.group:v1"] = roster("desk-identity");
+		h.meta["sync.group:v2"] = roster("desk-identity");
+		expect(await connectOnLegacy(mod)).toBe(true);
+		await new Promise((r) => setTimeout(r, 20));
+		expect(h.stored.desktopLink).toEqual(legacy);
+
+		await mod.desktopLinkProven("v2");
+		expect(h.stored.desktopLink).toEqual(legacy);
+
+		await mod.desktopLinkProven("v1");
+		expect(h.stored["desktopLink:v1"]).toEqual(legacy);
+		expect(h.stored.desktopLink).toBeUndefined();
+	});
+
+	it("goes when the app says, under the session, it is linked to nothing there", async () => {
+		const mod = await load();
+		h.refuseWith = "not linked to this app";
+
+		await connectOnLegacy(mod);
+
+		await vi.waitFor(() => expect(h.stored.desktopLink).toBeUndefined());
+	});
+
+	it("goes on Disconnect from a vault with no link of its own", async () => {
+		const mod = await load();
+		h.stored = { desktopLink: legacy };
+
+		await expect(mod.unlinkDesktop("v1")).resolves.toEqual({ remaining: 0 });
+		expect(h.stored.desktopLink).toBeUndefined();
+		expect((await mod.desktopLinkStatus()).paired).toBe(false);
+	});
+
+	it("stays on Disconnect from a vault with a link of its own, which is the one that goes", async () => {
+		const mod = await load();
+		h.stored = { desktopLink: legacy, "desktopLink:v1": { ...legacy, publicKey: "pub-1" } };
+
+		await expect(mod.unlinkDesktop("v1")).resolves.toEqual({ remaining: 1 });
+		expect(h.stored.desktopLink).toEqual(legacy);
+	});
+
+	it("never replaces a link its vault already has of its own", async () => {
+		const mod = await load();
+		const own = { ...legacy, publicKey: "pub-2" };
+		h.appIdentity = "desk-identity";
+		h.meta["sync.group:v2"] = roster("desk-identity");
+		h.stored = { desktopLink: legacy, "desktopLink:v2": own };
+		const opening = mod.openDesktopLink();
+		await vi.waitFor(() => expect(h.onMessage.length).toBeGreaterThan(0));
+		completeHandshake();
+		await opening;
+
+		await vi.waitFor(() => expect(h.stored.desktopLink).toBeUndefined());
+		expect(h.stored["desktopLink:v2"]).toBe(own);
+	});
+
+	it("stays when the browser cannot read which vaults sync with the app", async () => {
+		const mod = await load();
+		h.appIdentity = "desk-identity";
+		h.metaFails.add("vault.registry");
+
+		expect(await connectOnLegacy(mod)).toBe(true);
+		await new Promise((r) => setTimeout(r, 20));
+
+		expect(h.stored.desktopLink).toEqual(legacy);
+	});
+
+	it("stays when a vault's roster cannot be read", async () => {
+		const mod = await load();
+		h.appIdentity = "desk-identity";
+		h.meta["sync.group:v2"] = roster("desk-identity");
+		h.metaFails.add("sync.group:v1");
+
+		expect(await connectOnLegacy(mod)).toBe(true);
+		await new Promise((r) => setTimeout(r, 20));
+
+		expect(h.stored.desktopLink).toEqual(legacy);
+	});
+
+	it("stays, and is used, while the app does not answer", async () => {
+		const mod = await load();
+
+		expect(await connectOnLegacy(mod)).toBe(true);
+		await new Promise((r) => setTimeout(r, 20));
+
+		expect(h.stored.desktopLink).toEqual(legacy);
+		const hellos = h.posted.filter((m) => m.kind === "hello").map((m) => m.publicKey);
+		expect(hellos).toEqual(["pub"]);
+		// Or the unanswered request drops this link ten seconds on, in the middle of some later test.
+		await mod.closeDesktopLink();
+	});
+});
+
 // Pairing runs on a transport the PAGE opens, because the worker cannot open one. A worker that
 // was already running when the user granted nativeMessaging never gains connectNative, and the
 // open pairing window is itself what stops it restarting to pick the binding up. So the page
 // lends a pipe and the handshake, the keys and the storage write all stay here.
 describe("pairing borrows the page's native transport", () => {
 	/** Hand the background a proxy port, as runtime.onConnect would. */
-	function lend(sender: unknown) {
+	function lend(sender: unknown, id = "lent") {
 		const sent: Record<string, unknown>[] = [];
 		let onMessage: ((m: unknown) => void) | undefined;
 		let onDisconnect: (() => void) | undefined;
 		let disconnected = false;
 		const port = {
-			name: "link-native-proxy",
+			name: `link-native-proxy:${id}`,
 			sender,
-			postMessage: (m: Record<string, unknown>) => sent.push(m),
+			postMessage: (m: Record<string, unknown>) => {
+				sent.push(m);
+				// The app answers caps as soon as a link is up, as socket.rs does.
+				const sealed = (m.frame as { sealed?: string } | undefined)?.sealed;
+				const plain = sealed ? h.sealed.get(sealed) : undefined;
+				const op = plain ? JSON.parse(plain).op : undefined;
+				if (op === "caps" || op === "syncRestart" || op === "linkComplete") {
+					const answer =
+						op === "caps"
+							? { ok: true, caps: ["files"] }
+							: op === "linkComplete"
+								? h.linkCompleteAnswer
+								: { ok: true };
+					queueMicrotask(() =>
+						onMessage?.({ frame: { sealed: `sealed:${JSON.stringify(answer)}` } }),
+					);
+				}
+			},
 			onMessage: {
 				addListener: (cb: (m: unknown) => void) => {
 					onMessage = cb;
@@ -473,6 +1110,7 @@ describe("pairing borrows the page's native transport", () => {
 		};
 		for (const cb of h.onConnect) cb(port);
 		return {
+			id,
 			sent,
 			get disconnected() {
 				return disconnected;
@@ -491,10 +1129,10 @@ describe("pairing borrows the page's native transport", () => {
 
 	/** Drive a pairing to completion over `page`, resolving what pairWithDesktop returned. */
 	async function pairOver(
-		mod: { pairWithDesktop: (c: string) => Promise<unknown> },
+		mod: { pairWithDesktop: (c: string, via?: string) => Promise<unknown> },
 		page: ReturnType<typeof lend>,
 	) {
-		const paired = mod.pairWithDesktop("ABCD1234");
+		const paired = mod.pairWithDesktop("ABCD1234", page.id);
 		await vi.waitFor(() => expect(page.sent.length).toBe(3));
 		page.deliver({ ok: true, message: "xx2" });
 		await vi.waitFor(() => expect(page.sent.length).toBe(4));
@@ -547,7 +1185,7 @@ describe("pairing borrows the page's native transport", () => {
 		expect(evil.disconnected).toBe(true);
 		// Rejecting the port is only half of it; it must also never have become the transport.
 		// Falling back to a direct session is what proves it did not.
-		void mod.pairWithDesktop("ABCD1234").catch(() => {});
+		void mod.pairWithDesktop("ABCD1234", evil.id).catch(() => {});
 		await vi.waitFor(() => expect(h.connects).toBe(1));
 		expect(evil.sent).toEqual([]);
 	});
@@ -556,7 +1194,7 @@ describe("pairing borrows the page's native transport", () => {
 		const mod = await load();
 		const page = lend(EXT_SENDER);
 
-		const paired = mod.pairWithDesktop("ABCD1234");
+		const paired = mod.pairWithDesktop("ABCD1234", page.id);
 		await vi.waitFor(() => expect(page.sent.length).toBe(3));
 		page.drop();
 
@@ -568,13 +1206,707 @@ describe("pairing borrows the page's native transport", () => {
 		const mod = await load();
 		const page = lend(EXT_SENDER);
 
-		const paired = mod.pairWithDesktop("ABCD1234");
+		const paired = mod.pairWithDesktop("ABCD1234", page.id);
 		await vi.waitFor(() => expect(page.sent.length).toBe(3));
 		// The ordinary "desktop app is not installed" case: Chrome reports it as a bare
 		// disconnect and the page forwards the reason.
 		page.die("Specified native messaging host not found.");
 
 		await expect(paired).rejects.toThrow(/not found/);
+	});
+
+	/** Run the emoji link handshake over `page`, resolving what startDesktopLink returned. */
+	async function linkOver(mod: Awaited<ReturnType<typeof load>>, page: ReturnType<typeof lend>) {
+		const started = mod.startDesktopLink(page.id);
+		await vi.waitFor(() => expect(page.sent.length).toBe(3));
+		page.deliver({ ok: true, message: "xl2" });
+		await vi.waitFor(() => expect(page.sent.length).toBe(4));
+		page.deliver({ ok: true, done: true });
+		// The nonce exchange: the browser commits, the app answers with its nonce, the browser reveals.
+		await vi.waitFor(() => expect(page.sent.length).toBe(5));
+		page.deliver({ sealed: `sealed:${JSON.stringify({ ok: true, nonce: APP_NONCE })}` });
+		await vi.waitFor(() => expect(page.sent.length).toBe(6));
+		page.deliver({ sealed: `sealed:${JSON.stringify({ ok: true })}` });
+		return started;
+	}
+
+	const APP_NONCE = "AgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgI=";
+	const opened = (page: ReturnType<typeof lend>, i: number) =>
+		JSON.parse(
+			h.sealed.get((page.sent[i] as { frame: { sealed: string } }).frame.sealed) ?? "{}",
+		) as { op?: string; commit?: string; nonce?: string };
+
+	it("commits to its nonce before it learns the app's, then reveals that same nonce", async () => {
+		const mod = await load();
+		const page = lend(EXT_SENDER);
+		await linkOver(mod, page);
+
+		const commit = opened(page, 4);
+		const reveal = opened(page, 5);
+		expect(commit.op).toBe("linkCommit");
+		expect(reveal.op).toBe("linkReveal");
+		expect(await linkNonceCommit(reveal.nonce ?? "")).toBe(commit.commit);
+	});
+
+	it("links by emoji, storing the app only after the user confirms and the app agrees", async () => {
+		const mod = await load();
+		h.setCalls.length = 0;
+		const page = lend(EXT_SENDER);
+		const started = await linkOver(mod, page);
+		expect(page.sent[1]).toMatchObject({ frame: { kind: "link" } });
+		if (!("id" in started)) throw new Error("expected a link in progress");
+		expect(started.sas.emoji).toHaveLength(7);
+
+		const confirmed = mod.confirmDesktopLink(started.id, true);
+		await vi.waitFor(() => expect(page.sent.length).toBe(7));
+		const sealed = (page.sent[6] as { frame: { sealed: string } }).frame.sealed;
+		expect(JSON.parse(h.sealed.get(sealed) ?? "{}")).toEqual({ op: "linkConfirm" });
+		expect(h.setCalls).toEqual([]);
+		page.deliver({ sealed: `sealed:${JSON.stringify({ ok: true, paired: true })}` });
+
+		await expect(confirmed).resolves.toMatchObject({ appPublicKey: "app-pub" });
+		// Stored once the flow ends with a vault holding the desktop's: see "links per vault".
+		expect(h.setCalls).toEqual([]);
+		await mod.attachLink("v2");
+		expect(h.setCalls).toEqual([
+			{ "desktopLink:v2": expect.objectContaining({ appPublicKey: "app-pub" }) },
+		]);
+	});
+
+	it("drops a held link once a new link is stored, so later requests speak as the new key", async () => {
+		// The app binds its invite to the key that just linked. A held link opened under the
+		// previous key made the claim look like another browser's, and the vault never came.
+		const mod = await load();
+		await open(mod, []);
+		const before = h.disconnects;
+		const page = lend(EXT_SENDER);
+		const started = await linkOver(mod, page);
+		if (!("id" in started)) throw new Error("expected a link in progress");
+
+		const confirmed = mod.confirmDesktopLink(started.id, true);
+		await vi.waitFor(() => expect(page.sent.length).toBe(7));
+		page.deliver({ sealed: `sealed:${JSON.stringify({ ok: true, paired: true })}` });
+		await confirmed;
+
+		expect(h.disconnects).toBe(before + 1);
+	});
+
+	it("keeps the link's own pipe as the held link, so a worker without one can still sync", async () => {
+		// A browser that granted the permission at link time has a worker that cannot open a pipe
+		// until it restarts. The vault copy rides the held link, so closing the link's own pipe
+		// left the copy nothing to ride: it stalled at "connecting to inviter".
+		const mod = await load();
+		h.hasBinding = false;
+		const page = lend(EXT_SENDER);
+		const started = await linkOver(mod, page);
+		if (!("id" in started)) throw new Error("expected a link in progress");
+		const closes = h.linkCloses;
+
+		const confirmed = mod.confirmDesktopLink(started.id, true);
+		await vi.waitFor(() => expect(page.sent.length).toBe(7));
+		page.deliver({ sealed: `sealed:${JSON.stringify({ ok: true, paired: true })}` });
+		await confirmed;
+
+		expect(mod.linkIsHeld()).toBe(true);
+		expect(h.linkCloses).toBe(closes);
+		await expect(mod.sendSyncFrame("frame-1", "enroll")).resolves.toBe(true);
+		const last = page.sent.at(-1) as { frame: { sealed: string } };
+		expect(JSON.parse(h.sealed.get(last.frame.sealed) ?? "{}")).toMatchObject({
+			op: "sync",
+			frame: "frame-1",
+		});
+	});
+
+	it("keeps sync on the link's own pipe once sync starts, asking the app to offer again", async () => {
+		const mod = await load();
+		h.hasBinding = false;
+		const page = lend(EXT_SENDER);
+		const started = await linkOver(mod, page);
+		if (!("id" in started)) throw new Error("expected a link in progress");
+		const confirmed = mod.confirmDesktopLink(started.id, true);
+		await vi.waitFor(() => expect(page.sent.length).toBe(7));
+		page.deliver({ sealed: `sealed:${JSON.stringify({ ok: true, paired: true })}` });
+		await confirmed;
+
+		const frames: string[] = [];
+		await mod.openSyncLink((f) => frames.push(f));
+		page.deliver({ sealed: `sealed:${JSON.stringify({ sync: "offer" })}` });
+
+		await vi.waitFor(() => expect(frames).toEqual(["offer"]));
+		expect(mod.linkIsHeld()).toBe(true);
+	});
+
+	it("loses no frame the app pushes right after it approves", async () => {
+		// The app serves the link as soon as it answers, and may push at once. A frame nobody
+		// claimed was dropped, and Noise, which numbers frames, was out of step from then on.
+		const mod = await load();
+		const enrolled: string[] = [];
+		mod.setEnrollFrameSink((f) => enrolled.push(f));
+		const page = lend(EXT_SENDER);
+		const started = await linkOver(mod, page);
+		if (!("id" in started)) throw new Error("expected a link in progress");
+
+		const confirmed = mod.confirmDesktopLink(started.id, true);
+		await vi.waitFor(() => expect(page.sent.length).toBe(7));
+		page.deliver({ sealed: `sealed:${JSON.stringify({ ok: true, paired: true })}` });
+		page.deliver({ sealed: `sealed:${JSON.stringify({ sync: "offer", room: "enroll" })}` });
+		await confirmed;
+
+		await vi.waitFor(() => expect(enrolled).toEqual(["offer"]));
+	});
+
+	it("drops a held link once a code pairing is stored, for the same reason", async () => {
+		const mod = await load();
+		await open(mod, []);
+		const before = h.disconnects;
+		await pairOver(mod, lend(EXT_SENDER));
+
+		expect(h.disconnects).toBe(before + 1);
+	});
+
+	it("stores nothing when the user says the emoji do not match", async () => {
+		const mod = await load();
+		h.setCalls.length = 0;
+		const page = lend(EXT_SENDER);
+		const started = await linkOver(mod, page);
+		if (!("id" in started)) throw new Error("expected a link in progress");
+
+		await expect(mod.confirmDesktopLink(started.id, false)).rejects.toThrow();
+		expect(h.setCalls).toEqual([]);
+	});
+
+	it("stores nothing when the app refuses after the user confirms", async () => {
+		const mod = await load();
+		h.setCalls.length = 0;
+		const page = lend(EXT_SENDER);
+		const started = await linkOver(mod, page);
+		if (!("id" in started)) throw new Error("expected a link in progress");
+
+		const confirmed = mod.confirmDesktopLink(started.id, true);
+		await vi.waitFor(() => expect(page.sent.length).toBe(7));
+		page.deliver({ sealed: `sealed:${JSON.stringify({ ok: false, error: "refused" })}` });
+
+		await expect(confirmed).rejects.toThrow();
+		expect(h.setCalls).toEqual([]);
+	});
+
+	it("says the app did not approve when it drops the link instead of answering", async () => {
+		// What a desktop that approved and then closed its dialog looks like from here: it shuts the
+		// pipe rather than answer. The browser's own wording for that is no message for a person.
+		const mod = await load();
+		h.setCalls.length = 0;
+		const page = lend(EXT_SENDER);
+		const started = await linkOver(mod, page);
+		if (!("id" in started)) throw new Error("expected a link in progress");
+
+		const confirmed = mod.confirmDesktopLink(started.id, true);
+		await vi.waitFor(() => expect(page.sent.length).toBe(7));
+		page.die("Native host has exited.");
+
+		await expect(confirmed).rejects.toThrow("The desktop app did not approve the link.");
+		expect(h.setCalls).toEqual([]);
+	});
+
+	it("falls back to the code for an app that does not know the link hello", async () => {
+		const mod = await load();
+		const page = lend(EXT_SENDER);
+		const started = mod.startDesktopLink(page.id);
+		await vi.waitFor(() => expect(page.sent.length).toBe(3));
+		// An older app closes the connection on an unknown hello without a word.
+		page.die("Native host has exited.");
+
+		await expect(started).resolves.toEqual({ legacy: true });
+	});
+
+	it("lets go of a link the user walks away from", async () => {
+		const mod = await load();
+		const page = lend(EXT_SENDER);
+		const started = await linkOver(mod, page);
+		if (!("id" in started)) throw new Error("expected a link in progress");
+
+		const before = h.linkCloses;
+		await mod.cancelDesktopLink(started.id);
+
+		expect(h.linkCloses).toBe(before + 1);
+		await expect(mod.confirmDesktopLink(started.id, true)).rejects.toThrow(/no longer in progress/);
+	});
+
+	it("drops an unanswered link once the app's window has closed anyway", async () => {
+		const mod = await load();
+		const page = lend(EXT_SENDER);
+		const started = await linkOver(mod, page);
+		if (!("id" in started)) throw new Error("expected a link in progress");
+
+		vi.useFakeTimers({ toFake: ["Date"] });
+		vi.setSystemTime(Date.now() + 3 * 60_000 + 1);
+		await expect(mod.confirmDesktopLink(started.id, true)).rejects.toThrow(/no longer in progress/);
+		vi.useRealTimers();
+	});
+
+	it("says the app is missing on Firefox too, rather than offering the code", async () => {
+		const mod = await load();
+		const page = lend(EXT_SENDER);
+		const started = mod.startDesktopLink(page.id);
+		await vi.waitFor(() => expect(page.sent.length).toBe(3));
+		// Firefox's wording for a native host that is not installed.
+		page.die("No such native application app.bramble.desktop");
+
+		await expect(started).rejects.toThrow(/No such native application/);
+	});
+
+	it("says to open the app's Connect dialog when the app refuses the hello", async () => {
+		const mod = await load();
+		const page = lend(EXT_SENDER);
+		const started = mod.startDesktopLink(page.id);
+		await vi.waitFor(() => expect(page.sent.length).toBe(3));
+		page.deliver({ ok: false, error: "refused" });
+
+		await expect(started).rejects.toThrow(/Connect a browser/);
+	});
+
+	/** Link over `page` and have both screens agree, leaving the link in progress. */
+	async function confirmOver(mod: Awaited<ReturnType<typeof load>>, page: ReturnType<typeof lend>) {
+		const started = await linkOver(mod, page);
+		if (!("id" in started)) throw new Error("expected a link in progress");
+		const confirmed = mod.confirmDesktopLink(started.id, true);
+		await vi.waitFor(() => expect(page.sent.length).toBe(7));
+		page.deliver({ sealed: `sealed:${JSON.stringify({ ok: true, paired: true })}` });
+		return confirmed;
+	}
+
+	/** The plaintext of every sealed frame posted to `page`, as ops. */
+	const opsOn = (page: ReturnType<typeof lend>) =>
+		page.sent
+			.map((m) => (m.frame as { sealed?: string } | undefined)?.sealed)
+			.filter((x): x is string => typeof x === "string")
+			.map((x) => JSON.parse(h.sealed.get(x) ?? "{}").op as string | undefined);
+
+	describe("links per vault", () => {
+		it("keeps a confirmed link in progress, stored nowhere, until it attaches", async () => {
+			const mod = await load();
+			h.setCalls.length = 0;
+			await confirmOver(mod, lend(EXT_SENDER));
+
+			expect(h.setCalls).toEqual([]);
+			expect(mod.linkIsHeld()).toBe(true);
+		});
+
+		it("stores an attached link under that vault, and tells the app", async () => {
+			const mod = await load();
+			const page = lend(EXT_SENDER);
+			await confirmOver(mod, page);
+
+			await expect(mod.attachLink("v2")).resolves.toBe(true);
+
+			expect(h.stored["desktopLink:v2"]).toMatchObject({
+				publicKey: "pub",
+				appPublicKey: "app-pub",
+			});
+			expect(opsOn(page)).toContain("linkComplete");
+		});
+
+		it("keeps a link in progress held while the open vault changes", async () => {
+			// The vault copy changes the open vault itself, to the vault it creates.
+			const mod = await load();
+			await confirmOver(mod, lend(EXT_SENDER));
+
+			h.activeVault = "v9";
+			mod.retargetLink("v9");
+
+			expect(mod.linkIsHeld()).toBe(true);
+		});
+
+		it("tells Settings the open vault is not linked while a link is only in progress", async () => {
+			const mod = await load();
+			h.activeVault = "v2";
+			await confirmOver(mod, lend(EXT_SENDER));
+
+			expect((await mod.desktopLinkStatus()).paired).toBe(false);
+			await mod.abandonLink();
+			expect((await mod.desktopLinkStatus()).paired).toBe(false);
+		});
+
+		it("abandons a link in progress whose page closes, and holds the open vault's again", async () => {
+			// The vault copy runs in that page, so nothing can finish the link once it is gone.
+			const mod = await load();
+			const page = lend(EXT_SENDER);
+			await confirmOver(mod, page);
+
+			page.drop();
+
+			await expect(mod.attachLink("v2")).resolves.toBe(false);
+			await vi.waitFor(() => expect(h.posted.some((m) => m.kind === "hello")).toBe(true));
+			completeHandshake();
+			await vi.waitFor(() => expect(mod.heldVault()).toBe("v1"));
+		});
+
+		it("holds the vault's link again at once when the page that lent it closes", async () => {
+			const mod = await load();
+			h.stored = {};
+			const page = lend(EXT_SENDER);
+			await confirmOver(mod, page);
+			await expect(mod.attachLink("v1")).resolves.toBe(true);
+			await new Promise((r) => setTimeout(r, 50));
+			h.posted.length = 0;
+
+			page.drop();
+
+			await vi.waitFor(() => expect(h.posted.some((m) => m.kind === "hello")).toBe(true));
+		});
+
+		// A worker that was running when the permission was granted can never open a pipe, and only
+		// a later one can. It restarts only after going idle, and any API call resets that timer.
+		describe("on a worker that predates the grant, once the page that lent its pipe has gone", () => {
+			async function linkedThenPageGone(mod: Awaited<ReturnType<typeof load>>) {
+				h.hasBinding = false;
+				h.stored = {};
+				const page = lend(EXT_SENDER);
+				await confirmOver(mod, page);
+				await expect(mod.attachLink("v1")).resolves.toBe(true);
+				page.drop();
+				await vi.waitFor(() => expect(mod.linkIsHeld()).toBe(false));
+				await vi.waitFor(() => expect(h.alarms.size).toBeGreaterThan(0));
+			}
+
+			it("stops polling, which would keep this worker from ever being replaced", async () => {
+				vi.useFakeTimers({ shouldAdvanceTime: true });
+				const mod = await load();
+				await linkedThenPageGone(mod);
+				await vi.advanceTimersByTimeAsync(1000);
+				const before = h.permissionChecks;
+
+				await vi.advanceTimersByTimeAsync(5 * 60_000);
+
+				expect(h.permissionChecks).toBe(before);
+				vi.useRealTimers();
+			});
+
+			it("sets an alarm, since nothing else may wake the worker that can open one", async () => {
+				// Past the 30 to 60 s Chromium takes to stop an idle worker. Any sooner and it could only
+				// wake this worker again and put that off.
+				const mod = await load();
+				await linkedThenPageGone(mod);
+				expect([...h.alarms.values()]).toEqual([{ delayInMinutes: 1.05, periodInMinutes: 1.05 }]);
+			});
+
+			it("asks any page that is open for a pipe", async () => {
+				const mod = await load();
+				await linkedThenPageGone(mod);
+				expect(h.broadcast).toContainEqual({ type: "DESKTOP_LINK_PIPE_LOST" });
+			});
+
+			it("tells sync the link has gone, so it stops asking this worker for the vault", async () => {
+				const mod = await load();
+				h.hasBinding = false;
+				await mod.openSyncLink(() => {});
+				h.stored = {};
+				const page = lend(EXT_SENDER);
+				await confirmOver(mod, page);
+				await expect(mod.attachLink("v1")).resolves.toBe(true);
+				await vi.waitFor(() => expect(mod.linkIsHeld()).toBe(true));
+				h.linkDowns = 0;
+
+				page.drop();
+
+				await vi.waitFor(() => expect(h.linkDowns).toBeGreaterThan(0));
+			});
+
+			it("sets it once: creating it again would keep putting off its next fire", async () => {
+				const mod = await load();
+				await linkedThenPageGone(mod);
+				const armed = h.alarmsCreated;
+
+				// Sync keeps trying the dead link until it gives up on the peer.
+				await expect(mod.sendSyncFrame("frame")).resolves.toBe(false);
+				await expect(mod.sendSyncFrame("frame")).resolves.toBe(false);
+
+				expect(h.alarmsCreated).toBe(armed);
+			});
+		});
+
+		// A page's pipe carrying the link: sync restarting, or the link settling, finds it up.
+		describe("on a worker that predates the grant, with a page's pipe carrying the link", () => {
+			async function carried(mod: Awaited<ReturnType<typeof load>>) {
+				h.hasBinding = false;
+				h.stored = {};
+				const page = lend(EXT_SENDER);
+				await confirmOver(mod, page);
+				await expect(mod.attachLink("v1")).resolves.toBe(true);
+				await vi.waitFor(() => expect(mod.linkIsHeld()).toBe(true));
+				return page;
+			}
+
+			it("tells nobody the link is down when the link settles on its vault", async () => {
+				const mod = await load();
+				h.hasBinding = false;
+				await mod.openSyncLink(() => {});
+				h.linkDowns = 0;
+				h.broadcast.length = 0;
+
+				await carried(mod);
+				await new Promise((r) => setTimeout(r, 20));
+
+				expect(h.linkDowns).toBe(0);
+				expect(h.broadcast).not.toContainEqual({ type: "DESKTOP_LINK_PIPE_LOST" });
+			});
+
+			it("says it is up, and tells nobody otherwise, when sync starts over it", async () => {
+				const mod = await load();
+				await carried(mod);
+				h.linkDowns = 0;
+				h.broadcast.length = 0;
+
+				await expect(mod.openSyncLink(() => {})).resolves.toBe(true);
+
+				expect(mod.linkIsHeld()).toBe(true);
+				expect(h.linkDowns).toBe(0);
+				expect(h.broadcast).not.toContainEqual({ type: "DESKTOP_LINK_PIPE_LOST" });
+			});
+
+			it("asks the page to let the pipe go when the vault's link is disconnected", async () => {
+				const mod = await load();
+				const page = await carried(mod);
+
+				await mod.unlinkDesktop("v1");
+				await mod.closeDesktopLink();
+
+				expect(page.sent).toContainEqual({ release: true });
+			});
+		});
+
+		describe("the wake alarm", () => {
+			const armed = () => h.alarms.set("desktop-link-wake", { delayInMinutes: 1.05 });
+
+			it("is cleared with nothing left to link", async () => {
+				const mod = await load();
+				h.stored = {};
+				armed();
+				await expect(mod.openDesktopLink()).resolves.toBe(false);
+				expect(h.alarms.size).toBe(0);
+			});
+
+			it("is cleared when the permission has been taken away", async () => {
+				const mod = await load();
+				h.hasBinding = false;
+				h.permitted = false;
+				armed();
+				await expect(mod.openDesktopLink()).resolves.toBe(false);
+				expect(h.alarms.size).toBe(0);
+			});
+
+			it("can be set again after being cleared", async () => {
+				const mod = await load();
+				h.hasBinding = false;
+				await mod.openDesktopLink();
+				expect(h.alarms.size).toBe(1);
+				const stored = h.stored;
+				h.stored = {};
+				await mod.openDesktopLink();
+				expect(h.alarms.size).toBe(0);
+				h.stored = stored;
+				await mod.openDesktopLink();
+				expect(h.alarms.size).toBe(1);
+			});
+		});
+
+		// Replacing the worker takes a minute, and someone with a window open is looking at it now.
+		describe("a page lending a pipe for the open vault's link", () => {
+			const linked = () => {
+				h.hasBinding = false;
+			};
+
+			it("is wanted when this worker cannot open one and holds none", async () => {
+				const mod = await load();
+				linked();
+				await expect(mod.pipeWanted()).resolves.toBe(true);
+			});
+
+			it("is not wanted by a worker that can open its own", async () => {
+				const mod = await load();
+				await expect(mod.pipeWanted()).resolves.toBe(false);
+			});
+
+			it("is not wanted with nothing linked, or the permission taken away", async () => {
+				const mod = await load();
+				linked();
+				h.permitted = false;
+				await expect(mod.pipeWanted()).resolves.toBe(false);
+				h.permitted = true;
+				h.stored = {};
+				await expect(mod.pipeWanted()).resolves.toBe(false);
+			});
+
+			it("holds the vault's link over it, on a worker with no pipe of its own", async () => {
+				const mod = await load();
+				linked();
+				const page = lend(EXT_SENDER);
+
+				const holding = mod.holdOverLentPipe(page.id);
+				await vi.waitFor(() =>
+					expect(page.sent.some((m) => (m.frame as { kind?: string })?.kind === "hello")).toBe(
+						true,
+					),
+				);
+				page.deliver({ ok: true, done: true, message: "kk2" });
+
+				await expect(holding).resolves.toBe(true);
+				expect(mod.heldVault()).toBe("v1");
+				await expect(mod.pipeWanted()).resolves.toBe(false);
+				expect(h.connects).toBe(0);
+			});
+
+			it("is wanted again when the page that lent it closes", async () => {
+				const mod = await load();
+				linked();
+				const page = lend(EXT_SENDER);
+				const holding = mod.holdOverLentPipe(page.id);
+				await vi.waitFor(() => expect(page.sent.length).toBeGreaterThan(2));
+				page.deliver({ ok: true, done: true, message: "kk2" });
+				await holding;
+
+				page.drop();
+
+				await vi.waitFor(() =>
+					expect(h.broadcast).toContainEqual({ type: "DESKTOP_LINK_PIPE_LOST" }),
+				);
+				await expect(mod.pipeWanted()).resolves.toBe(true);
+			});
+
+			it("drops a link the app refuses in a request on a pipe of its own", async () => {
+				const mod = await load();
+				linked();
+				const asked = lend(EXT_SENDER, "asked");
+				const asking = mod.askDesktop({ op: "vaultSummary" }, asked.id);
+				await vi.waitFor(() => expect(asked.sent.length).toBeGreaterThan(2));
+				asked.deliver({ ok: true, done: true, message: "kk2" });
+				await vi.waitFor(() =>
+					expect(
+						asked.sent.some((m) => typeof (m.frame as { sealed?: unknown })?.sealed === "string"),
+					).toBe(true),
+				);
+				asked.deliver({
+					sealed: `sealed:${JSON.stringify({ ok: false, error: "not linked to this app" })}`,
+				});
+
+				await asking.catch(() => {});
+				await vi.waitFor(() => expect(h.stored["desktopLink:v1"]).toBeUndefined());
+			});
+
+			it("waits for a request on a pipe of its own, or that connection would displace this one", async () => {
+				// The app keys a browser's pushes by its static key. If a one-off request connects after
+				// the held link and then closes, the held link is left receiving nothing.
+				const mod = await load();
+				linked();
+				const asked = lend(EXT_SENDER, "asked");
+				const asking = mod.askDesktop({ op: "vaultSummary" }, asked.id);
+				await vi.waitFor(() => expect(asked.sent.length).toBeGreaterThan(2));
+
+				const page = lend(EXT_SENDER, "held");
+				const holding = mod.holdOverLentPipe(page.id);
+				await new Promise((r) => setTimeout(r, 30));
+				expect(page.sent.some((m) => (m.frame as { kind?: string })?.kind === "hello")).toBe(false);
+
+				asked.deliver({ ok: false, error: "refused" });
+				await asking.catch(() => {});
+				await vi.waitFor(() =>
+					expect(page.sent.some((m) => (m.frame as { kind?: string })?.kind === "hello")).toBe(
+						true,
+					),
+				);
+				page.deliver({ ok: true, done: true, message: "kk2" });
+				await holding;
+			});
+		});
+
+		it("stores nothing for a link abandoned before it attaches", async () => {
+			const mod = await load();
+			h.setCalls.length = 0;
+			await confirmOver(mod, lend(EXT_SENDER));
+
+			await mod.abandonLink();
+
+			expect(h.setCalls).toEqual([]);
+			expect(mod.linkIsHeld()).toBe(false);
+			await expect(mod.attachLink("v2")).resolves.toBe(false);
+		});
+
+		it("stores nothing when there is no link in progress to attach", async () => {
+			// What a worker restarted mid-copy sees: the link in progress went with it.
+			const mod = await load();
+			h.setCalls.length = 0;
+
+			await expect(mod.attachLink("v2")).resolves.toBe(false);
+			expect(h.setCalls).toEqual([]);
+		});
+
+		it("leaves another vault's link alone when linking, attaching or abandoning", async () => {
+			const mod = await load();
+			const before = h.stored["desktopLink:v1"];
+			await confirmOver(mod, lend(EXT_SENDER, "first"));
+			await mod.abandonLink();
+			await confirmOver(mod, lend(EXT_SENDER, "second"));
+			await mod.attachLink("v2");
+
+			expect(h.stored["desktopLink:v1"]).toBe(before);
+			expect(h.removed).toEqual([]);
+		});
+
+		it("does not attach a link the app will not complete, and lets it go", async () => {
+			// The app forgot it: its Connect window closed, or the pending link expired.
+			const mod = await load();
+			h.linkCompleteAnswer = { ok: false, error: "no link to complete" };
+			await confirmOver(mod, lend(EXT_SENDER));
+
+			await expect(mod.attachLink("v2")).resolves.toBe(false);
+			expect(h.stored["desktopLink:v2"]).toBeUndefined();
+			expect(mod.linkIsHeld()).toBe(false);
+		});
+
+		it("lets go of an attached link whose vault is not the one open now", async () => {
+			// The vault switched elsewhere during the copy: the link is stored for its vault, and
+			// the one held is the open vault's own.
+			const mod = await load();
+			await confirmOver(mod, lend(EXT_SENDER));
+			h.activeVault = "v1";
+
+			await expect(mod.attachLink("v2")).resolves.toBe(true);
+
+			expect(h.stored["desktopLink:v2"]).toBeDefined();
+			expect(mod.heldVault()).not.toBe("v2");
+		});
+
+		it("holds an attached code pairing as that vault's, not as one still in progress", async () => {
+			const mod = await load();
+			h.activeVault = "v2";
+			await pairOver(mod, lend(EXT_SENDER));
+			const opening = mod.openDesktopLink();
+			await vi.waitFor(() => expect(h.onMessage.length).toBeGreaterThan(0));
+			completeHandshake();
+			await opening;
+
+			await mod.attachLink("v2");
+
+			expect(mod.heldVault()).toBe("v2");
+		});
+
+		it("keeps a code pairing in progress too, until it attaches", async () => {
+			const mod = await load();
+			h.setCalls.length = 0;
+			await pairOver(mod, lend(EXT_SENDER));
+
+			expect(h.setCalls).toEqual([]);
+			await expect(mod.attachLink("v2")).resolves.toBe(true);
+			expect(h.stored["desktopLink:v2"]).toBeDefined();
+		});
+
+		it("attaches a link to an app from before linkComplete, which listed it already", async () => {
+			const mod = await load();
+			h.linkCompleteAnswer = { ok: false, error: "bad request: unknown variant `linkComplete`" };
+			await confirmOver(mod, lend(EXT_SENDER));
+
+			await expect(mod.attachLink("v2")).resolves.toBe(true);
+			expect(h.stored["desktopLink:v2"]).toBeDefined();
+		});
 	});
 });
 
@@ -584,6 +1916,37 @@ describe("pairing borrows the page's native transport", () => {
 // grant and repairs itself on the next start. Neither may reach connectNative, which is undefined
 // in the second case and would throw a TypeError into whatever was awaiting.
 describe("a paired browser that cannot use native messaging", () => {
+	it("sets no alarm for a permission that was taken away: a later worker would fare no better", async () => {
+		const mod = await load();
+		h.permitted = false;
+		h.hasBinding = false;
+
+		expect(await mod.openDesktopLink()).toBe(false);
+
+		expect(h.alarms.size).toBe(0);
+	});
+
+	it("sets no alarm with nothing linked", async () => {
+		const mod = await load();
+		h.hasBinding = false;
+		h.stored = {};
+
+		expect(await mod.openDesktopLink()).toBe(false);
+
+		expect(h.alarms.size).toBe(0);
+	});
+
+	it("clears the alarm once a worker can open a pipe of its own", async () => {
+		const mod = await load();
+		h.alarms.set("desktop-link-wake", { periodInMinutes: 1 });
+		const opening = mod.openDesktopLink();
+		await vi.waitFor(() => expect(h.onMessage.length).toBeGreaterThan(0));
+		completeHandshake();
+		await opening;
+
+		expect(h.alarms.size).toBe(0);
+	});
+
 	it("arms nothing when the permission was revoked", async () => {
 		const mod = await load();
 		h.permitted = false;
@@ -672,11 +2035,11 @@ describe("a paired browser that cannot use native messaging", () => {
 // gated on this worker's own ability the claim silently answered "no invite" every time: the
 // browser got the link and never the vault.
 describe("a borrowed pipe serves link requests, not just pairing", () => {
-	function lend() {
+	function lend(id = "lent") {
 		const sent: Record<string, unknown>[] = [];
 		let onMessage: ((m: unknown) => void) | undefined;
 		const port = {
-			name: "link-native-proxy",
+			name: `link-native-proxy:${id}`,
 			sender: { origin: "https://bramble-test.example" },
 			postMessage: (m: Record<string, unknown>) => sent.push(m),
 			onMessage: {
@@ -696,7 +2059,7 @@ describe("a borrowed pipe serves link requests, not just pairing", () => {
 		h.hasBinding = false; // the worker that just paired
 		const page = lend();
 
-		const asked = mod.askDesktop({ op: "syncInvite" });
+		const asked = mod.askDesktop({ op: "syncInvite" }, "lent");
 		// hello, then the KK handshake message.
 		await vi.waitFor(() => expect(page.sent.length).toBe(3));
 		page.deliver({ ok: true, done: true, message: "kk2" });
@@ -706,6 +2069,59 @@ describe("a borrowed pipe serves link requests, not just pairing", () => {
 		// Before this fix the claim rejected here, and the caller reported "no invite armed".
 		await expect(asked).resolves.toEqual({ ok: true, invite: "INVITE-CODE" });
 		expect(h.connects).toBe(0);
+	});
+
+	const hellos = (page: ReturnType<typeof lend>) =>
+		page.sent.filter((m) => (m.frame as { kind?: string } | undefined)?.kind === "hello").length;
+
+	it("gives each request its own lent pipe, even when two run at once", async () => {
+		// The app reads a connection as one session. Settings asks for the app's sync key while the
+		// link flow asks for its vault: on one shared pipe the second hello arrived where the app
+		// expected a sealed frame, the app dropped the connection, and the invite never came.
+		const mod = await load();
+		h.hasBinding = false;
+		const a = lend("a");
+		const b = lend("b");
+
+		const first = mod.askDesktop({ op: "vaultSummary" }, "a");
+		const second = mod.askDesktop({ op: "syncIdentity" }, "b");
+		await vi.waitFor(() => expect(hellos(a) + hellos(b)).toBe(2));
+		expect(hellos(a)).toBe(1);
+		expect(hellos(b)).toBe(1);
+
+		for (const page of [a, b]) page.deliver({ ok: true, done: true, message: "kk2" });
+		await vi.waitFor(() => expect(a.sent.length).toBe(4));
+		await vi.waitFor(() => expect(b.sent.length).toBe(4));
+		a.deliver({ sealed: `sealed:${JSON.stringify({ ok: true, summary: "A" })}` });
+		b.deliver({ sealed: `sealed:${JSON.stringify({ ok: true, identity: "B" })}` });
+		await expect(first).resolves.toEqual({ ok: true, summary: "A" });
+		await expect(second).resolves.toEqual({ ok: true, identity: "B" });
+	});
+
+	it("keeps a pipe lent for one request away from every other", async () => {
+		// Sync asks for the app's key on its own. A pipe a page lent for the emoji link must not
+		// carry it: the app would read its hello as the link's next frame.
+		const mod = await load();
+		h.hasBinding = false;
+		const page = lend("link");
+
+		await expect(mod.askDesktop({ op: "syncIdentity" })).rejects.toThrow(
+			/cannot reach the desktop app/,
+		);
+		expect(page.sent).toEqual([{ ready: true }]);
+	});
+
+	it("carries one session per lent pipe, never a second", async () => {
+		const mod = await load();
+		h.hasBinding = false;
+		const page = lend("once");
+
+		void mod.askDesktop({ op: "syncInvite" }, "once").catch(() => {});
+		await vi.waitFor(() => expect(hellos(page)).toBe(1));
+		await expect(mod.askDesktop({ op: "syncInvite" }, "once")).rejects.toThrow(
+			/cannot reach the desktop app/,
+		);
+		expect(hellos(page)).toBe(1);
 	});
 
 	it("still refuses when there is neither a binding nor a lent pipe", async () => {

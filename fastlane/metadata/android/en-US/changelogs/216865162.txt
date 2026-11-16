@@ -1,0 +1,11 @@
+What's new in this release:
+
+- Search looks through notes too, and shows name matches first.
+- After the app locks, unlocking takes you back to the screen you were on, with your search and your place in the list.
+- The vault list remembers the sort order you picked.
+- The sync log shows when each line happened and which device it's about. Settings > Sync has a Sync now button.
+- The app lets you know when a newer version is out.
+- Sync starts as soon as the first device you invite joins.
+- Devices connect for sync more reliably.
+
+No account, no cloud. Everything stays on your devices.

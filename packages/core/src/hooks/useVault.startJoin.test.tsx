@@ -42,6 +42,7 @@ function makePlatform() {
 		onExternalChange: vi.fn(() => () => {}),
 	};
 	const shell = {
+		syncRosterChanged: vi.fn(async () => {}),
 		setActiveVault,
 		getActiveVault: vi.fn(async () => null),
 		flushPendingCornerCapture: vi.fn(async () => {}),
@@ -56,7 +57,7 @@ function makePlatform() {
 		shell,
 		clipboard: {},
 	} as unknown as Platform;
-	return { platform, setActiveVault, storage };
+	return { platform, setActiveVault, storage, shell };
 }
 
 describe("startJoin re-entry", () => {
@@ -65,8 +66,8 @@ describe("startJoin re-entry", () => {
 		const getActions = mountVaultActions(platform);
 		await act(async () => {}); // flush the registry load
 
-		let first: Promise<void> | null = null;
-		let second: Promise<void> | null = null;
+		let first: Promise<string> | null = null;
+		let second: Promise<string> | null = null;
 		await act(async () => {
 			first = getActions().startJoin(CODE, { kind: "password", password: "pw" });
 			second = getActions().startJoin(CODE, { kind: "password", password: "pw" });
@@ -127,6 +128,84 @@ describe("the vault a join creates", () => {
 	});
 });
 
+describe("what a join resolves with", () => {
+	it("is the vault it opened: here the one already in the group", async () => {
+		// The desktop link attaches to this vault, whatever else opens meanwhile.
+		const { platform, storage } = makePlatform();
+		const meta: Record<string, unknown> = {
+			[VAULT_REGISTRY_KEY]: { vaults: [{ id: "v-home", label: "", createdAt: 1 }] },
+			"sync.group:v-home": { groupKey: "Z3JvdXA=" },
+		};
+		storage.getMeta.mockImplementation((async (k: string) => meta[k]) as never);
+		const getActions = mountVaultActions(platform);
+		await act(async () => {});
+
+		let opened: unknown;
+		await act(async () => {
+			opened = await getActions().startJoin(CODE, { kind: "password", password: "pw" });
+		});
+		expect(opened).toBe("v-home");
+	});
+});
+
+describe("removing a device", () => {
+	const seeded = () => {
+		const made = makePlatform();
+		const meta: Record<string, unknown> = {
+			[VAULT_REGISTRY_KEY]: { vaults: [{ id: "v-home", label: "", createdAt: 1 }] },
+			"sync.group:v-home": {
+				groupKey: "Z3JvdXA=",
+				roster: {
+					devices: [
+						{
+							id: "phone",
+							publicKey: "pk",
+							label: "phone",
+							addedAt: 1,
+							hlc: { wall: 1, counter: 0, node: "phone" },
+						},
+					],
+					revoked: [],
+				},
+			},
+		};
+		made.storage.getMeta.mockImplementation((async (k: string) => meta[k]) as never);
+		made.storage.setMeta.mockImplementation((async (k: string, v: unknown) => {
+			meta[k] = v;
+		}) as never);
+		return { ...made, meta };
+	};
+	const revokedIds = (meta: Record<string, unknown>) =>
+		(meta["sync.group:v-home"] as { roster: { revoked: { id: string }[] } }).roster.revoked.map(
+			(t) => t.id,
+		);
+
+	it("tells the host once the roster is written", async () => {
+		const { platform, shell, meta } = seeded();
+		let writtenWhenTold: string[] = [];
+		shell.syncRosterChanged.mockImplementation(async () => {
+			writtenWhenTold = revokedIds(meta);
+		});
+		const getActions = mountVaultActions(platform);
+		await act(async () => {});
+		await act(async () => {
+			await getActions().removeDevice("phone");
+		});
+		expect(writtenWhenTold).toEqual(["phone"]);
+	});
+
+	it("stands even if the host fails", async () => {
+		const { platform, shell, meta } = seeded();
+		shell.syncRosterChanged.mockRejectedValue(new Error("no answer"));
+		const getActions = mountVaultActions(platform);
+		await act(async () => {});
+		await act(async () => {
+			await expect(getActions().removeDevice("phone")).resolves.toBeUndefined();
+		});
+		expect(revokedIds(meta)).toEqual(["phone"]);
+	});
+});
+
 describe("joining is master-password only", () => {
 	/** A credential stub, present so a stray ceremony would be caught rather than silently pass. */
 	function stubAuthenticator() {
@@ -158,5 +237,29 @@ describe("joining is master-password only", () => {
 		await act(async () => {});
 
 		expect(create).not.toHaveBeenCalled();
+	});
+});
+
+describe("a join handed over by the desktop app", () => {
+	it("asks the host to join over the link", async () => {
+		const { platform } = makePlatform();
+		Object.assign(platform.shell, {
+			syncDevicePublicKey: vi.fn(async () => "bWU="),
+			onSyncEvent: vi.fn(() => () => {}),
+		});
+		Object.assign(platform.storage, { removeMeta: vi.fn(async () => {}) });
+		const getActions = mountVaultActions(platform);
+		await act(async () => {});
+
+		await act(async () => {
+			void getActions()
+				.joinGroup(CODE, { kind: "password", password: "pw" }, { viaLink: true })
+				.catch(() => {});
+		});
+		await act(async () => {});
+
+		expect(platform.shell.startEnrollJoin).toHaveBeenCalledWith(
+			expect.objectContaining({ viaLink: true }),
+		);
 	});
 });

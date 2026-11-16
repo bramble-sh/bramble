@@ -16,6 +16,12 @@ export interface VaultFiles {
 	 */
 	present?(record: FileRecord): Promise<void>;
 	/**
+	 * Decrypt one attachment into a place the user picks with the OS's save dialog. True once
+	 * saved, false if they cancel. Absent where Open's own sheet already offers a save (iOS),
+	 * and the UI then offers no Save.
+	 */
+	save?(record: FileRecord): Promise<boolean>;
+	/**
 	 * Pick a file with the platform's own dialog, where it can hand back something better than
 	 * the Blob an `<input type=file>` yields: on desktop, a path the native side seals from
 	 * directly, so the file's bytes never cross into the webview. Null when the user cancels.
@@ -28,6 +34,11 @@ export interface VaultFiles {
 	 * ask, and the row then says only that the file is not here yet.
 	 */
 	transferStatus?(hashes: string[]): Promise<Record<string, FileTransferStatus>>;
+	/**
+	 * Decrypt one attachment into something `sealer.seal` takes again, for carrying it into
+	 * another vault. Absent where a file's plaintext cannot be handed back like this.
+	 */
+	stage?(record: FileRecord): Promise<PickedAttachment & { size: number }>;
 }
 
 /** A file chosen through `VaultFiles.pick`, ready to attach. */

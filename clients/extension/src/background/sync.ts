@@ -57,10 +57,13 @@ import {
 	blobLinkUp,
 	closeBlobLink,
 	closeSyncLink,
+	desktopLinkProven,
+	desktopSyncKey,
 	openBlobLink,
 	openSyncLink,
 	sendBlobFrame,
 	sendSyncFrame,
+	setEnrollFrameSink,
 } from "./desktop-link";
 import { keepEventPageAlive, releaseEventPage } from "./event-page-keepalive";
 import { sendToOffscreen, setInProcessSyncBridge, useOffscreenDoc } from "./offscreen-client";
@@ -378,6 +381,25 @@ export async function stopSync({
 	await stopInFlight;
 }
 
+/**
+ * "Sync now": what an unlock does, without the lock. Every peer is dropped and found again; a
+ * pairing in progress is left alone (a roster stop, not a disconnect).
+ */
+export async function restartSync(): Promise<void> {
+	const vekEpoch = vekStore.vekMutationSnapshot();
+	if (vekStore.activeVaultLocked()) throw new Error("the vault is locked");
+	await stopSync({ keepVaultId: null });
+	await maybeStartSync(vekEpoch);
+}
+
+on(
+	"SYNC_RESTART",
+	extensionOnly(async () => {
+		await restartSync();
+		return { ok: true };
+	}),
+);
+
 /** The active vault moved: stop any roster session serving another vault, even one this worker didn't start. */
 export function retargetSync(activeVaultId: string | null): void {
 	if (syncRunning && syncVaultId === activeVaultId) return;
@@ -596,6 +618,13 @@ on(
 	}),
 );
 
+// The vault copy from the desktop app, which can arrive before any sync session exists.
+setEnrollFrameSink((frame) => {
+	void sendToOffscreen({ type: "LINK_SYNC_FRAME", payload: { frame, room: "enroll" } }).catch(
+		() => {},
+	);
+});
+
 // Firefox: no offscreen document, so the roster-sync host runs in this event page
 // and calls these directly instead of round-tripping through runtime messaging.
 setInProcessSyncBridge({
@@ -607,6 +636,8 @@ setInProcessSyncBridge({
 	linkSend: sendSyncFrame,
 	linkBlobSend: sendBlobFrame,
 	linkBlobUp: async () => blobLinkUp(),
+	linkDesktopSyncKey: () => desktopSyncKey(),
+	linkAuthenticated: (vaultId) => void desktopLinkProven(vaultId).catch(() => {}),
 });
 
 // The attachment rows ask why a file hasn't arrived; the file session in the host knows.

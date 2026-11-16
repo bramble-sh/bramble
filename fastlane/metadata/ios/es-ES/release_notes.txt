@@ -1,14 +1,11 @@
-Novedades de esta versión:
+Novedades en esta versión:
 
-- Las claves de acceso guardadas en Bramble ahora funcionan en sitios que las usan para proteger sus datos (iOS 18 y versiones posteriores).
-- Importar desde Proton Pass ahora trae sus claves de acceso, archivos y todos los sitios web, e importar desde 1Password trae sus archivos. La vista previa de importación cuenta los archivos adjuntos antes de empezar.
-- Crear alias de correo con Fastmail Masked Email.
-- Los sitios web de un inicio de sesión ahora se muestran agrupados bajo una misma etiqueta.
-- Las credenciales cuyo sitio web se guardó sin "https://", como nas.local:5000, ahora se autocompletan y encuentran sus claves de acceso.
-- Importar desde Apple Passwords conserva las fechas de cada elemento y la pantalla de transferencia ahora muestra el nombre de Bramble.
-- Crear varias claves de acceso seguidas ya no hace que se pierda ninguna, y una clave de acceso solo se ofrece en su propio sitio.
-- Guardar ya no se bloquea cuando su conexión falla, por ejemplo con una VPN en mal estado. Si un guardado tarda demasiado, la aplicación lo indica.
-- Un archivo que estaba adjuntando cuando se cerró la aplicación ya no permanece en sus copias de seguridad.
-- Mejoras de seguridad en la sincronización.
+- La búsqueda también revisa las notas y muestra primero las coincidencias por nombre.
+- Cuando la app se bloquea, al desbloquearla se vuelve a la pantalla en la que estaba, con la búsqueda y la posición en la lista.
+- La lista de la bóveda recuerda el orden de clasificación elegido.
+- El registro de sincronización muestra cuándo se produjo cada línea y a qué dispositivo corresponde. Configuración > Sincronización incluye un botón Sincronizar ahora.
+- La app avisa cuando está disponible una versión más reciente.
+- La sincronización comienza en cuanto se une el primer dispositivo invitado.
+- Los dispositivos se conectan para sincronizarse de forma más fiable.
 
 Sin cuenta, sin nube. Todo permanece en sus dispositivos.

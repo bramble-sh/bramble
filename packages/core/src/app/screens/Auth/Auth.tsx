@@ -72,8 +72,7 @@ export function Auth() {
 	// The vault this screen is unlocking, named in the top-left (mirrors the unlocked header).
 	// Absent on first run, when there's no vault yet.
 	const activeIndex = vaults.findIndex((v) => v.id === activeId);
-	const vaultLabel =
-		activeIndex >= 0 ? displayLabel(vaults[activeIndex]!.label, activeIndex) : null;
+	const vaultLabel = activeIndex >= 0 ? displayLabel(vaults[activeIndex]!, activeIndex) : null;
 	const canWebauthnUnlock = useWebauthnUnlock();
 	const { popOut, canPopOut } = usePopOut();
 	const { t } = useLingui();
@@ -506,7 +505,7 @@ export function Auth() {
 										spellCheck={false}
 										aria-label={t`Recovery code`}
 										disabled={busy}
-										className="w-full px-3 py-2 text-sm font-mono rounded-lg border border-border bg-transparent focus:outline-none focus:border-primary/50"
+										className="w-full px-3 py-2 text-sm font-mono rounded-lg border border-input-border bg-transparent focus:outline-none focus:border-primary"
 									/>
 									{recoveryError && (
 										<p className="text-xs text-destructive">

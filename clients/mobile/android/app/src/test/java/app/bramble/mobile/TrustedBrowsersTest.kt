@@ -56,10 +56,21 @@ class TrustedBrowsersTest {
         val json = TrustedBrowsers.allowlistJson()
         assertTrue(json.startsWith("{\"apps\":["))
         assertTrue(json.contains("\"cert_fingerprint_sha256\""))
-        for ((pkg, fingerprints) in TrustedBrowsers.BROWSERS) {
+        for ((pkg, fingerprints) in TrustedBrowsers.BROWSERS + TrustedBrowsers.PASSKEY_RELAYS) {
             assertTrue("missing $pkg", json.contains("\"package_name\":\"$pkg\""))
             for (fp in fingerprints) assertTrue("missing fingerprint $fp for $pkg", json.contains(fp))
         }
+    }
+
+    @Test
+    fun playServicesVouchesForPasskeyOriginsButNeverForAutofill() {
+        // A passkey QR code scanned from another device reaches us through Play Services; without
+        // it, create fails and sign-in finds nothing. It is no browser, so autofill must not
+        // believe its webDomain.
+        val gms = "com.google.android.gms"
+        assertEquals(4, TrustedBrowsers.PASSKEY_RELAYS[gms]?.size)
+        assertTrue(TrustedBrowsers.allowlistJson().contains("\"package_name\":\"$gms\""))
+        assertFalse(TrustedBrowsers.BROWSERS.containsKey(gms))
     }
 
     @Test
@@ -73,11 +84,19 @@ class TrustedBrowsersTest {
     }
 
     @Test
+    fun waterfoxTrustsBothItsStoreAndGithubKeys() {
+        // #202: GPM's key and the GitHub release APK's key differ, and users install from either.
+        val gpm = "29:39:99:7A:2D:8F:07:30:3C:EB:37:AD:68:10:AF:EF:0B:DA:71:0B:E2:11:64:76:E3:52:5A:73:79:EC:2E:1A"
+        val github = "F0:91:CA:39:98:B4:9E:15:9D:23:EE:95:58:69:99:C7:5D:0B:70:23:FC:F9:C5:41:92:A8:13:00:AC:16:6E:17"
+        assertEquals(setOf(gpm, github), TrustedBrowsers.BROWSERS["net.waterfox.android.release"])
+    }
+
+    @Test
     fun allowlistFingerprintsAreWellFormed() {
         // Catch a typo'd fingerprint (wrong length / bad chars) that would silently break a browser.
         val fingerprint = Regex("^([0-9A-F]{2}:){31}[0-9A-F]{2}$")
         assertTrue("the allow-list must not be empty", TrustedBrowsers.BROWSERS.isNotEmpty())
-        for ((pkg, fingerprints) in TrustedBrowsers.BROWSERS) {
+        for ((pkg, fingerprints) in TrustedBrowsers.BROWSERS + TrustedBrowsers.PASSKEY_RELAYS) {
             assertFalse("$pkg has no fingerprints", fingerprints.isEmpty())
             for (fp in fingerprints) {
                 assertTrue("$pkg fingerprint malformed: $fp", fingerprint.matches(fp))

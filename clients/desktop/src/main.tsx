@@ -15,11 +15,16 @@ import { desktopPairing } from "./adapters/pairing";
 import { desktopShell, registerOpenSetup, resolveAppVersion } from "./adapters/shell";
 import { desktopStorage } from "./adapters/storage";
 import { onVaultStateChange } from "./adapters/vault-session";
+import { startAutoLock } from "./auto-lock";
 import { startBackupSchedule } from "./backup";
 import { forwardConsoleToLog } from "./log-forward";
+import { installNativeWebRtc } from "./native-webrtc";
 import { initRosterSync } from "./sync/roster";
 import { listenForMenuUpdateCheck, promptForUpdateOnLaunch } from "./updates-prompt";
 import { installWindowShortcuts, syncTrayTheme } from "./window-chrome";
+
+// The e2e harness's bridge: dev server only, opt-in. See scripts/vite-e2e-bridge.mjs.
+if (import.meta.env.DEV && import.meta.env.VITE_E2E_BRIDGE === "1") void import("./e2e-bridge");
 
 // Decrypted attachment copies (opened in another app) are deleted at startup and on every lock,
 // so none outlives the session it was opened in. See ./adapters/files.ts.
@@ -62,6 +67,9 @@ function Root() {
 	// is kept whether or not it is unlocked. See ./backup.
 	useEffect(() => startBackupSchedule(), []);
 
+	// The auto-lock clock runs in the shell; this window reports input and follows its lock.
+	useEffect(() => startAutoLock(), []);
+
 	// The one nudge about a new version. Nothing else tells anyone: this app is distributed as a
 	// GitHub release, so without it a fix reaches only the people who open Settings and look.
 	useEffect(() => promptForUpdateOnLaunch(), []);
@@ -98,6 +106,8 @@ void (async () => {
 	forwardConsoleToLog();
 	// Settings' "About" row reads this synchronously, so resolve it before the first render.
 	await resolveAppVersion();
+	// Before anything can start sync: the transport checks for WebRTC once. Linux only in effect.
+	await installNativeWebRtc().catch((e) => console.error("[sync] native WebRTC unavailable:", e));
 	// Ctrl-W / Ctrl-Q, and a tray icon that stays visible against the panel. Both are no-ops on
 	// macOS, where the menu and the template icon already do the job. See ./window-chrome.
 	installWindowShortcuts();

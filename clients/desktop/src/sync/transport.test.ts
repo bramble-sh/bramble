@@ -13,6 +13,31 @@ const h = vi.hoisted(() => ({
 	meta: new Map<string, unknown>(),
 	/** The options the enroll host was started with, so a test can drive its callbacks. */
 	enrollOpts: null as Record<string, (...a: never[]) => unknown> | null,
+	linkSource: null as { room: string; only: unknown } | null,
+	linkPaired: null as ((e: { payload: { peerId: string } }) => void) | null,
+	/** Each start of ongoing sync, and whether the joiner was in the roster by then. */
+	syncStarts: [] as { joinerInRoster: boolean }[],
+}));
+
+vi.mock("./roster", async (importOriginal) => ({
+	...(await importOriginal<typeof import("./roster")>()),
+	maybeStartRosterSync: async () => {
+		h.syncStarts.push({ joinerInRoster: joiner() !== undefined });
+	},
+}));
+
+const LINK_SOURCE = async () => ({ stop() {} });
+vi.mock("./link-peers", () => ({
+	linkPeerSourceFor: (room: string, only: unknown) => {
+		h.linkSource = { room, only };
+		return LINK_SOURCE;
+	},
+}));
+vi.mock("@tauri-apps/api/event", () => ({
+	listen: async (_name: string, cb: (e: { payload: { peerId: string } }) => void) => {
+		h.linkPaired = cb;
+		return () => {};
+	},
 }));
 
 vi.mock("@core/sync/transport/enroll-host", () => ({
@@ -125,6 +150,9 @@ async function loadTransport() {
 beforeEach(() => {
 	h.meta.clear();
 	h.enrollOpts = null;
+	h.linkSource = null;
+	h.linkPaired = null;
+	h.syncStarts = [];
 	h.meta.set("active-vault", VAULT);
 	h.meta.set(`sync.group:${VAULT}`, {
 		groupKey: "k",
@@ -186,6 +214,16 @@ describe("host-side roster add on enroll", () => {
 		expect(rosterAtEvent).toBeDefined();
 	});
 
+	it("starts ongoing sync once the device is in the roster", async () => {
+		// Sync starts on unlock, and only for a vault already in a group. A first pairing makes the
+		// group, so without this the new browser waited for the next unlock to see any edit.
+		const mod = await loadTransport();
+		await invite(mod);
+		await enrolled(JSON.stringify(JOINER));
+
+		await vi.waitFor(() => expect(h.syncStarts).toEqual([{ joinerInRoster: true }]));
+	});
+
 	it("survives a malformed enrolled entry without losing the roster", async () => {
 		const mod = await loadTransport();
 		await invite(mod);
@@ -208,5 +246,50 @@ describe("host-side roster add on enroll", () => {
 
 		expect(joiner(VAULT)).toBeDefined();
 		expect(joiner("vault-b")).toBeUndefined();
+	});
+});
+
+describe("an invite delivered over the link", () => {
+	const base = {
+		relayUrl: "wss://relay.invalid",
+		groupKeyB64: "k",
+		psk: "psk",
+		roster: { devices: [INVITER], revoked: [] },
+		entries: { entries: [], tombstones: [] },
+	};
+
+	it("waits to learn how the browser linked before starting the copy", async () => {
+		const mod = await loadTransport();
+		await mod.startEnrollInvite({ ...base, viaLink: true });
+		expect(h.enrollOpts).toBeNull();
+	});
+
+	it("runs over the link's enroll room and releases the vault without a prompt", async () => {
+		const mod = await loadTransport();
+		const { onSyncEvent } = await import("./bus");
+		const kinds: string[] = [];
+		onSyncEvent((e) => kinds.push(e.kind));
+		await mod.startEnrollInvite({ ...base, viaLink: true });
+		h.linkPaired?.({ payload: { peerId: "browser" } });
+		await vi.waitFor(() => expect(h.enrollOpts).not.toBeNull());
+
+		expect(h.enrollOpts?.peerSource).toBe(LINK_SOURCE);
+		expect(h.linkSource?.room).toBe("enroll");
+		const approve = h.enrollOpts?.approve as unknown as (s: unknown, l: string) => Promise<boolean>;
+		expect(await approve({ digits: "1", emoji: [] }, "Chrome")).toBe(true);
+		expect(kinds).not.toContain("enroll-approval");
+	});
+
+	it("keeps the prompt for any other invite, such as a phone's", async () => {
+		const mod = await loadTransport();
+		await mod.startEnrollInvite(base);
+
+		expect(h.enrollOpts?.peerSource).toBeUndefined();
+		const approve = h.enrollOpts?.approve as unknown as (s: unknown, l: string) => Promise<boolean>;
+		const answer = await Promise.race([
+			approve({ digits: "1", emoji: [] }, "Phone"),
+			new Promise((r) => setTimeout(() => r("waiting"), 30)),
+		]);
+		expect(answer).toBe("waiting");
 	});
 });

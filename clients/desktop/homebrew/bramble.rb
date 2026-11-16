@@ -1,8 +1,8 @@
 cask "bramble" do
-  version "0.15.0"
-  sha256 "e3a41204479d30ddd10ba7c2e74588f3e00f10dd166ae76be6eafe8d5421ab80"
+  version "0.19.0"
+  sha256 "8bb50c2a0f594b008e1348a01398ef525d089fa353bef64f6f53f5f5abe1c7b9"
 
-  url "https://github.com/flythenimbus/bramble/releases/download/#{version}-desktop/Bramble_#{version}_universal.dmg"
+  url "https://github.com/bramble-sh/bramble/releases/download/#{version}-desktop/Bramble_#{version}_universal.dmg"
   name "Bramble"
   desc "Password manager"
   homepage "https://bramble.sh/"

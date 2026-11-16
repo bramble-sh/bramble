@@ -36,6 +36,9 @@ export interface PopOutHandoff {
 /** Full-tab screens the options page can boot into, via `?screen=`. Default (omitted) is the vault setup flow. */
 export type OptionsScreen = "import" | "restore";
 
+/** Who saves passwords in this browser. "locked": a policy or another extension holds the setting. */
+export type DefaultPasswordManager = "bramble" | "browser" | "locked";
+
 /** A passkey the provider just stored, for a confirmation toast. */
 interface PasskeySavedInfo {
 	rpId: string;
@@ -114,8 +117,8 @@ export interface ShellAdapter {
 	popOut(handoff?: PopOutHandoff): Promise<void>;
 	/** Read (and clear) the handoff stashed by a preceding popOut(). Null when there's nothing to restore. Called once during boot. */
 	consumeHandoff(): Promise<PopOutHandoff | null>;
-	/** Extension only: answer the passkey provider's confirm-it's-you window (`id` from its URL). */
-	reportPasskeyVerification?(id: string, verified: boolean): Promise<void>;
+	/** Extension only: answer the passkey provider's confirm-it's-you window (`id` from its URL). `signInAgain`: the site's request ended, so the user must retry there. */
+	reportPasskeyVerification?(id: string, verified: boolean): Promise<{ signInAgain: boolean }>;
 	/**
 	 * Persist the current route so a normal (non-detached) popup resumes where it was after
 	 * being closed and reopened while the session is still unlocked. Fire-and-forget; only
@@ -157,6 +160,14 @@ export interface ShellAdapter {
 	 * capability). Persisting the pref is the caller's job; the background reads it per query anyway,
 	 * so this only exists to drop a dropdown that is already on screen. */
 	setAutofillEnabled?(enabled: boolean): Promise<void>;
+	/** Open a login's website in a new tab and fill it there once (extension only). See
+	 * docs/launch-and-fill.md. */
+	launchLogin?(entryId: string, url: string): Promise<void>;
+	/** Whether the browser's own password manager is switched off for Bramble (extension only; #135). */
+	getDefaultPasswordManager?(): Promise<DefaultPasswordManager>;
+	/** Switch the browser's own password saving and card autofill off (true) or hand them back.
+	 * Asks for a permission first, so call it straight from the click with nothing awaited before. */
+	setDefaultPasswordManager?(bramble: boolean): Promise<DefaultPasswordManager>;
 	/** Attach/detach the passkey provider at runtime (extension only; paired with the passkeyProvider capability). Persisting the pref is the caller's job; this just applies it now. */
 	setPasskeyProviderEnabled?(enabled: boolean): Promise<void>;
 	/** Subscribe to passkey-provider saves so the UI can confirm them (extension only). Returns an unsubscribe. */
@@ -193,8 +204,12 @@ export interface ShellAdapter {
 	 * host must stop listening the moment the window closes, but an already-paired device adding
 	 * a third one must not lose its live sync to do it (which is what stopSyncSpike would cost). */
 	stopEnrollInvite?(): Promise<void>;
-	/** Subscribe to the sync host's status lines (shown in the dev panel). Returns an unsubscribe function. */
-	onSyncStatus(callback: (status: string) => void): () => void;
+	/** Subscribe to the sync host's status lines (shown in the dev panel), each with the epoch ms it
+	 * was logged at. Returns an unsubscribe function. */
+	onSyncStatus(callback: (status: string, at: number) => void): () => void;
+	/** "Sync now": restart this vault's ongoing sync, as an unlock does. Every peer is dropped and
+	 * found again; a pairing in progress is left alone. Rejects while locked. */
+	syncNow?(): Promise<void>;
 	/** This device's Noise static public key (base64), for the roster and pairing code. Generated + persisted on first call. */
 	syncDevicePublicKey(): Promise<string>;
 	/** This device's Ed25519 roster-signing verify key (base64), for authenticated roster entries
@@ -270,6 +285,9 @@ export interface ShellAdapter {
 	/** Admission-sign an admitted device's canonical roster entry with THIS device's password-derived
 	 * admission key (see syncAdmissionPublicKey). Requires a fresh password entry. Paired with it. */
 	syncAdmissionSign?(password: string, saltB64: string, canonical: string): Promise<string>;
+	/** A device was just removed from the open vault's roster on this device. For a host with
+	 * something tied to that device, such as the desktop app's link to a browser. */
+	syncRosterChanged?(): Promise<void>;
 	/** Clear all of this device's local sync state (group, device keys, relay) so a freshly created
 	 * vault starts as an un-enrolled device — sync identity belongs to the vault, not the browser.
 	 * Optional: platforms with no local sync state may omit it. */
@@ -306,6 +324,9 @@ export interface ShellAdapter {
 		 * joiner ("not in roster"). Idempotent with the UI write (deterministic Ed25519). Omitted
 		 * when this device can't admit (security-key-only). See docs/multiple-vaults.md. */
 		admission?: { password: string; saltB64: string; adminId: string };
+		/** Delivered to a browser over the desktop link: the copy stays on the link and needs no
+		 * second check, because only the browser that paired in that dialog can claim it. */
+		viaLink?: boolean;
 	}): Promise<void>;
 	/** Enrollment (joiner): connect to the inviter from a decoded pairing code; the offscreen rebuilds the vault, unlocked by a password or a security-key slot (exactly one). `ownEntry` is handed to the inviter so both rosters end up symmetric. */
 	startEnrollJoin(opts: {
@@ -317,6 +338,8 @@ export interface ShellAdapter {
 		ownEntry: RosterEntry;
 		password?: string;
 		webauthn?: { hmacSecretB64: string; credentialIdB64: string; saltB64: string };
+		/** The invite came from the desktop app over the link: join over the link, not the relay. */
+		viaLink?: boolean;
 	}): Promise<void>;
 	/** Subscribe to structured enrollment events from the sync host (e.g. the joiner's rebuilt vault). Returns an unsubscribe function. */
 	onSyncEvent(callback: (event: SyncEvent) => void): () => void;

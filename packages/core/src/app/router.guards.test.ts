@@ -14,7 +14,7 @@ type VaultSlice = {
 	entries: Entry[];
 	unlockedWithRecoveryCode?: boolean;
 };
-type RegistrySlice = { ready: boolean; count: number; hasActive: boolean };
+type RegistrySlice = { ready: boolean; count: number; hasActive: boolean; activeId?: string };
 
 const login = (id: string): Entry => ({
 	id,
@@ -97,6 +97,93 @@ describe("route guards", () => {
 	it("makes no guard decision before context is injected (first-paint placeholder)", async () => {
 		// undefined-vault placeholder: guards must skip, not crash or redirect.
 		expect(await destination("/")).toBe("/");
+	});
+});
+
+// A lock mid-session (mobile's default "Immediately" fires on every trip to another app)
+// bounces to the unlock screen; unlocking should land back on the screen it interrupted.
+describe("unlock returns to the interrupted screen", () => {
+	const open: VaultSlice = { isLocked: false, ready: true, entries: [login("abc")] };
+
+	const active = (activeId: string): RegistrySlice => ({
+		ready: true,
+		count: 2,
+		hasActive: true,
+		activeId,
+	});
+
+	async function lockThenUnlock(
+		path: string,
+		unlocked: VaultSlice = open,
+		vaults: { locked?: RegistrySlice; unlocked?: RegistrySlice } = {},
+	) {
+		const router = await load(path, open, vaults.locked);
+		const set = async (vault: VaultSlice, registry?: RegistrySlice) => {
+			router.update({
+				context: { vault: { unlockedWithRecoveryCode: false, ...vault }, registry },
+			});
+			await router.invalidate();
+		};
+		await set({ ...open, isLocked: true }, vaults.locked);
+		const locked = router.state.location.pathname;
+		await set(unlocked, vaults.unlocked ?? vaults.locked);
+		return { router, locked };
+	}
+
+	it("returns to Settings on the same tab", async () => {
+		const { router, locked } = await lockThenUnlock("/settings?tab=sync");
+		expect(locked).toBe("/");
+		expect(router.state.location.pathname).toBe("/settings");
+		expect(router.state.location.search).toMatchObject({ tab: "sync" });
+	});
+
+	it("returns there when the same vault unlocks", async () => {
+		const { router } = await lockThenUnlock("/settings?tab=sync", open, { locked: active("a") });
+		expect(router.state.location.pathname).toBe("/settings");
+	});
+
+	// "Create another vault" on the unlock screen opens the new vault without the picker.
+	it("opens a different vault on its list, not the screen the lock left", async () => {
+		const { router } = await lockThenUnlock("/settings?tab=sync", open, {
+			locked: active("a"),
+			unlocked: active("b"),
+		});
+		expect(router.state.location.pathname).toBe("/vault");
+	});
+
+	it("returns to an open entry", async () => {
+		const { router } = await lockThenUnlock("/vault/abc");
+		expect(router.state.location.pathname).toBe("/vault/abc");
+	});
+
+	it("falls back to the list when the entry is gone after unlock", async () => {
+		const { router } = await lockThenUnlock("/vault/abc", { ...open, entries: [] });
+		expect(router.state.location.pathname).toBe("/vault");
+	});
+
+	it("never returns to the passkey confirm, a one-shot window (#187)", async () => {
+		const { router } = await lockThenUnlock("/passkey-verify?id=req-1&rp=github.com");
+		expect(router.state.location.pathname).toBe("/vault");
+	});
+
+	it("still lands a recovery-code unlock on the master password", async () => {
+		const { router } = await lockThenUnlock("/generator", {
+			...open,
+			unlockedWithRecoveryCode: true,
+		});
+		expect(router.state.location.pathname).toBe("/settings");
+		expect(router.state.location.search).toMatchObject({ tab: "security" });
+	});
+
+	it("returns to the list with its search", async () => {
+		const { router } = await lockThenUnlock("/vault?q=bank");
+		expect(router.state.location.pathname).toBe("/vault");
+		expect(router.state.location.search).toMatchObject({ q: "bank" });
+	});
+
+	it("ignores a return path that isn't an in-app one", async () => {
+		expect(await destination("/?redirect=%2F%2Fevil.example", open)).toBe("/vault");
+		expect(await destination("/?redirect=https%3A%2F%2Fevil.example", open)).toBe("/vault");
 	});
 });
 

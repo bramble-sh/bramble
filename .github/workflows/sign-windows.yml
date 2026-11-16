@@ -1,19 +1,17 @@
 name: Sign Windows installer
 
-# Builds the Windows installer and has SignPath Authenticode-sign it.
+# Builds the Windows installer on a GitHub runner and Authenticode-signs it, with Azure Artifact
+# Signing or SignPath Foundation: the repository variable WINDOWS_SIGNER picks (`azure`, the default,
+# or `signpath`). Exactly one sign job runs and both hand back `bramble-windows-signed`, so nothing
+# downstream knows which signed. The release installer is built here rather than cross-compiled on a Mac because the
+# signing tool runs only on Windows; see docs/desktop-port.md.
 #
-# This exists because SignPath's free tier for open source projects verifies where a binary came
-# from: the repository, the branch and the build agent, with the origin metadata supplied by
-# GitHub rather than by anything this file says. Their terms require every job leading up to the
-# signing request to run on a GitHub-hosted runner, so the Windows installer cannot be the
-# cross-compiled one from a maintainer's Mac. It is the only artifact Bramble ships that is not
-# built locally, and see docs/desktop-port.md for why that trade is acceptable here and would not
-# be on macOS.
-#
-# Two jobs, like the other release workflows: `build` holds no secret, `sign` holds the SignPath
-# token. Split also because a production signature waits on a person approving it in SignPath, so a
-# slow approval must cost only the signing job: re-running it resubmits the same installer, no
-# rebuild. The terminal that dispatched the release says when to approve; see release-watch.ts.
+# Build, then sign, like the other release workflows: `build` holds no credential. The Azure job
+# can obtain an Azure token. Nothing is stored for that: `sign` runs in the `windows-signing` environment, which
+# only main may deploy to, and Azure trusts a GitHub OIDC token for exactly that environment of this
+# repository (a federated credential). So a branch or a fork can build, never sign. Split also so
+# the third-party code a build runs (every crate's build script, every npm install hook) never runs
+# beside that token.
 #
 # What this workflow deliberately does NOT do is produce the updater signature. That key is the
 # root of trust for every update the app will ever accept and it never leaves the release's publish
@@ -21,8 +19,9 @@ name: Sign Windows installer
 # scripts/build-windows.ts.
 #
 # Driven by `pnpm run build:windows --ci-start`, which dispatches this, and `--ci-collect`, which
-# waits for it and signs what comes back. A run against SignPath's TEST certificate, outside any
-# release, is `gh workflow run sign-windows.yml -f version=<v> -f allow_untrusted=true`.
+# waits for it and signs what comes back. Outside a release: `gh workflow run sign-windows.yml -f
+# version=<the version in tauri.conf.json on main>`, plus `-f allow_untrusted=true` against
+# SignPath's TEST certificate. SignPath's own constraints are on its job below.
 
 on:
   workflow_dispatch:
@@ -35,7 +34,7 @@ on:
       # path that forgot a flag would otherwise ship whatever certificate the policy variable points
       # at, which before the production certificate exists is the test one.
       allow_untrusted:
-        description: Accept a signature Windows does not trust (test certificate runs only, never a release)
+        description: Accept a signature Windows does not trust (SignPath test certificate runs only, never a release)
         required: false
         default: false
         type: boolean
@@ -68,11 +67,9 @@ jobs:
 
       # Deliberately NOT cached, unlike ci.yml. A Rust cache restores a compiled target/
       # directory, so the signed binary could contain objects that did not come from this run's
-      # checkout, and "built solely from the source code in the public repository" is the exact
-      # property SignPath verifies before it will sign anything. ci.yml writes that cache key on
-      # every push to main, so restoring it here would quietly widen the trust boundary of the
-      # one artifact that carries a third party's certificate to every workflow that touches it.
-      # The cost is a cold build, roughly ten minutes, on a job that already waits on a human.
+      # checkout. ci.yml writes that cache key on every push to main, so restoring it here would
+      # widen the trust boundary of the one artifact signed in CI to every workflow that touches it.
+      # The cost is a cold build, roughly ten minutes.
       # `cache: false` is what enforces it: the action caches by default.
       - name: Setup Rust
         uses: actions-rust-lang/setup-rust-toolchain@v2
@@ -114,8 +111,8 @@ jobs:
       - name: Build the installer
         run: pnpm --filter @vault/platform-desktop exec tauri build --bundles nsis
 
-      # Isolated so the signing request submits exactly one file and the signed artifact comes
-      # back as exactly one file. The throwaway .sig is left behind on purpose.
+      # Isolated so exactly one file is signed and handed back. The throwaway .sig is left behind on
+      # purpose.
       - name: Stage the unsigned installer
         shell: bash
         run: |
@@ -132,9 +129,99 @@ jobs:
           path: unsigned/
           if-no-files-found: error
 
-  sign:
+  sign-azure:
+    name: Sign with Azure
+    needs: build
+    if: ${{ vars.WINDOWS_SIGNER == '' || vars.WINDOWS_SIGNER == 'azure' }}
+    runs-on: windows-latest
+    # The OIDC subject Azure trusts, and the branch rule that keeps everything but main out of it.
+    environment: windows-signing
+    permissions:
+      id-token: write
+    timeout-minutes: 30
+    steps:
+      - name: Download the unsigned installer
+        uses: actions/download-artifact@v8
+        with:
+          name: bramble-windows-unsigned
+          path: signed
+
+      # Pinned to commits: these two hold the signing identity.
+      - name: Azure login
+        uses: azure/login@a641126d1b8aa4d1fa005f4f92df94a3a4c4c906 # v3.1.0
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          # The app holds one role on one certificate profile and nothing on any subscription.
+          allow-no-subscriptions: true
+
+      # Timestamped, which is what keeps the signature valid: the certificate itself lives 3 days.
+      - name: Sign the installer
+        uses: azure/artifact-signing-action@c7ab2a863ab5f9a846ddb8265964877ef296ee82 # v2.0.0
+        with:
+          endpoint: ${{ vars.AZURE_SIGNING_ENDPOINT }}
+          signing-account-name: ${{ vars.AZURE_SIGNING_ACCOUNT }}
+          certificate-profile-name: ${{ vars.AZURE_CERTIFICATE_PROFILE }}
+          files-folder: ${{ github.workspace }}\signed
+          files-folder-filter: exe
+          file-digest: SHA256
+          timestamp-rfc3161: http://timestamp.acs.microsoft.com
+          timestamp-digest: SHA256
+          exclude-environment-credential: true
+          exclude-workload-identity-credential: true
+          exclude-managed-identity-credential: true
+          exclude-shared-token-cache-credential: true
+          exclude-visual-studio-credential: true
+          exclude-visual-studio-code-credential: true
+          exclude-azure-cli-credential: false
+          exclude-azure-powershell-credential: true
+          exclude-azure-developer-cli-credential: true
+          exclude-interactive-browser-credential: true
+
+      # The failure worth catching is a silently UNSIGNED artifact: it looks identical to a signed
+      # one until a user downloads it and SmartScreen says otherwise. Asks Windows whether the
+      # signature validates rather than grepping the binary for an issuer name.
+      - name: Assert the installer came back signed
+        shell: pwsh
+        run: |
+          $exe = Get-ChildItem signed\*-setup.exe | Select-Object -First 1
+          if ($null -eq $exe) { Write-Output "::error::no -setup.exe to check"; exit 1 }
+
+          $sig = Get-AuthenticodeSignature $exe.FullName
+          if ($null -eq $sig.SignerCertificate) {
+            Write-Output "::error::$($exe.Name) carries no signature; did signing actually run?"
+            exit 1
+          }
+
+          Write-Output "signer: $($sig.SignerCertificate.Subject)"
+          Write-Output "issuer: $($sig.SignerCertificate.Issuer)"
+          Write-Output "status: $($sig.Status)"
+          if ($null -eq $sig.TimeStamperCertificate) {
+            Write-Output "::error::$($exe.Name) is not timestamped, so its signature dies with the 3-day certificate"
+            exit 1
+          }
+          if ($sig.Status -ne 'Valid') {
+            Write-Output "::error::the signature does not validate ($($sig.Status))"
+            exit 1
+          }
+          Get-ChildItem signed
+
+      - name: Upload the signed installer
+        uses: actions/upload-artifact@v7
+        with:
+          name: bramble-windows-signed
+          path: signed/
+          if-no-files-found: error
+
+  # SignPath's free tier for open source verifies where a binary came from: every job leading up to
+  # the request must run on a GitHub-hosted runner, with origin metadata from GitHub itself. A
+  # production signature waits on a person approving it in SignPath, so a slow approval costs only
+  # this job: re-running it resubmits the same installer, no rebuild. The terminal that dispatched
+  # the release says when to approve; see release-watch.ts.
+  sign-signpath:
     name: Sign with SignPath
     needs: build
+    if: ${{ vars.WINDOWS_SIGNER == 'signpath' }}
     runs-on: windows-latest
     # `id-token` is what SignPath's origin verification reads.
     permissions:

@@ -38,6 +38,11 @@ describe("toListItem", () => {
 		expect(toListItem(login({ passkeys: [passkey] }), true).passkeys).toBe(1);
 	});
 
+	it("marks a reused password only when told to", () => {
+		expect(toListItem(login(), true, undefined, false, true).reused).toBe(true);
+		expect(toListItem(login(), true).reused).toBe(false);
+	});
+
 	it("reports zero for a login with none", () => {
 		expect(toListItem(login(), true).passkeys).toBe(0);
 	});
@@ -84,6 +89,23 @@ describe("toListItem", () => {
 	it("folds custom fields into the search text", () => {
 		const item = toListItem(login({ customFields: [{ key: "PIN", value: "1234" }] }), true);
 		expect(item.searchText).toContain("pin");
+	});
+
+	it("searches a login's notes, ranked after its name and username", () => {
+		const item = toListItem(
+			login({
+				name: "Bank",
+				username: "me@bank.com",
+				notes: "Branch 42",
+				customFields: [{ key: "PIN", value: "1234" }],
+			}),
+			true,
+		);
+		expect(item.searchText).toContain("branch 42");
+		expect(item.searchTiers?.[0]).toBe("bank");
+		expect(item.searchTiers?.[1]).toContain("me@bank.com");
+		expect(item.searchTiers?.[2]).toContain("branch 42");
+		expect(item.searchTiers?.[2]).toContain("pin");
 	});
 });
 

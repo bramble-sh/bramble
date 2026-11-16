@@ -9,6 +9,8 @@
  * where the Settings section then does not render.
  */
 
+import type { PairingSas } from "../sync/pairing-sas";
+
 export interface DesktopLinkStatus {
 	paired: boolean;
 	/** Epoch ms, when paired. */
@@ -32,6 +34,24 @@ export interface DesktopLinkAdapter {
 	 * deliberately does not say which, so this cannot report it either.
 	 */
 	pair(code: string): Promise<void>;
+	/**
+	 * Start linking by emoji: resolves with the emoji to show once the handshake is done, or
+	 * `{ legacy: true }` for an app that only knows the code. Absent where only the code exists.
+	 */
+	start?(): Promise<{ id: string; sas: PairingSas } | { legacy: true }>;
+	/** The user's answer to the emoji. Resolves once the app has approved too; nothing is stored
+	 * otherwise. */
+	confirm?(id: string, matches: boolean): Promise<void>;
+	/** Let go of a link the user walked away from. */
+	cancel?(id: string): Promise<void>;
+	/** What the desktop app's vault holds, asked right after linking and before claiming its
+	 * invite: the app answers only the browser that just linked. Null when it will not say. */
+	vaultSummary?(): Promise<{
+		name: string;
+		empty: boolean;
+		entries: number;
+		backupTargets?: boolean;
+	} | null>;
 	/** Reconnect over the established keys. True when the desktop app accepted. */
 	connect(): Promise<boolean>;
 	/**
@@ -60,9 +80,18 @@ export interface DesktopLinkAdapter {
 	 * running or predates this.
 	 */
 	desktopSyncKey?(): Promise<string | null>;
-	/** Forget the desktop app on this side. Revoking on the app's side is separate; doing
-	 * both is what fully severs the link. */
-	unlink(): Promise<void>;
+	/**
+	 * Attach the link just made to the vault that now holds the desktop's, once the app has listed
+	 * it. False when the app will not (its window closed, or the link expired): the link is let go.
+	 */
+	attach?(vaultId: string): Promise<boolean>;
+	/** Let go of a link made in a flow that ended without a vault. Nothing is kept on either side. */
+	abandon?(): Promise<void>;
+	/** Forget a deleted vault's link: a key the desktop app would still accept. */
+	forgetVault?(vaultId: string): Promise<void>;
+	/** Forget the open vault's link on this side, and say how many vaults still have one. Revoking
+	 * on the app's side is separate; doing both is what fully severs the link. */
+	unlink(): Promise<{ remaining: number }>;
 	/**
 	 * The browser permission the link needs, where the host asks for it at runtime instead of
 	 * being granted it at install.

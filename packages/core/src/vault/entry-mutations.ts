@@ -23,17 +23,23 @@ import {
 	encodeEntriesPayload,
 	entryConflicts,
 	isAncestor,
+	mergeEntriesPayload,
 	nextCausal,
 	nextVersion,
 } from "../sync";
 import { base64ToBytes } from "../util/bytes";
 import type { EncryptedEntry, VaultBlob } from "../vault-format";
 import { toAutofillIndex } from "./autofill-index";
+import { foldCarriedCopy, type MatchedCopy } from "./combine-into";
 import { createEntriesBlobStore } from "./entries-blob";
 import { entryDataSchema } from "./entry-normalize";
 import { cascadeFilesForEntries, type SealedFile, withSealedFiles } from "./file-mutations";
 import { withPartStamps } from "./parts";
-import { withPasswordChangelog, withSupersededPasswords } from "./password-changelog";
+import {
+	withCarriedPasswordChangelog,
+	withPasswordChangelog,
+	withSupersededPasswords,
+} from "./password-changelog";
 import { normalizeTags, tagKey, tagsEqual } from "./tags";
 
 // Coalesce a burst of uses into one write.
@@ -47,6 +53,14 @@ const USE_COALESCE_MS = 60_000;
  */
 export interface VaultEntries {
 	entries: Entry[];
+	/**
+	 * The entries ciphertext this state came from, so a write over anything else merges instead of
+	 * losing it: another window's save reaches this one only if it hears. Part of the state rather
+	 * than beside it, so a reload landing during a write can't vouch for the snapshot being written.
+	 * Null when not known, which merges too. Absent where a platform has one UI context and no
+	 * tracking. See docs/multiple-vaults.md "Two windows".
+	 */
+	diskSeen?: Uint8Array | null;
 	stamps: Map<string, Hlc>;
 	/** Causal history of each displayed version; absent for one written by an older build. */
 	causal: Map<string, Causal>;
@@ -99,13 +113,22 @@ export type ResolveChoice =
 export interface EntryMutationsDeps {
 	crypto: Pick<
 		CryptoAdapter,
-		"encryptEntry" | "encryptWithVek" | "decryptWithVek" | "decryptEntries"
+		"encryptEntry" | "encryptWithVek" | "decryptWithVek" | "decryptEntries" | "notifyExternalChange"
 	>;
 	storage: Pick<StorageAdapter, "writeVaultBlob">;
 	autofill: Pick<AutofillAdapter, "beginIndexUpdate" | "setIndex">;
 	readDecodedBlob: () => Promise<{ blob: VaultBlob }>;
 	/** Lazily resolves this device's HLC; mutations stamp new writes from it. */
 	clock: () => Promise<HybridClock>;
+	/** A write had to merge: memory lacks what it merged with until it is read again. */
+	onDiskMerged?: () => void;
+}
+
+export interface ImportOptions {
+	/** These come out of another vault the user holds, not a file, so their old passwords stay. */
+	ownVault?: boolean;
+	/** Copies of entries already here, from another vault the user holds: folded in by this write. */
+	matched?: readonly MatchedCopy[];
 }
 
 export interface EntryMutations {
@@ -118,6 +141,7 @@ export interface EntryMutations {
 		current: VaultEntries,
 		items: EntryData[],
 		files?: ImportedFile[],
+		opts?: ImportOptions,
 	): Promise<VaultEntries>;
 	/**
 	 * Save an edit. With `opened`, the save supersedes that version; if another one is displayed
@@ -300,8 +324,11 @@ export function conflictsOf(s: VaultEntries): Map<string, EntryConflict> {
 	});
 }
 
+const sameCiphertext = (a: Uint8Array | null, b: Uint8Array) =>
+	a !== null && a.length === b.length && a.every((v, i) => v === b[i]);
+
 export function createEntryMutations(deps: EntryMutationsDeps): EntryMutations {
-	const { crypto, storage, autofill, readDecodedBlob, clock } = deps;
+	const { crypto, storage, autofill, readDecodedBlob, clock, onDiskMerged } = deps;
 
 	// The on-disk entries format lives in one place (EntriesBlobStore); these are
 	// the same primitives the sync-enrollment path and mobile roster sync use.
@@ -387,9 +414,28 @@ export function createEntryMutations(deps: EntryMutationsDeps): EntryMutations {
 	// failed write leaves the caller's state untouched.
 	const persist = async (next: VaultEntries): Promise<VaultEntries> => {
 		const indexLease = await autofill.beginIndexUpdate?.();
-		await writeEntriesBlob(await buildPayload(next));
+		const payload = await buildPayload(next);
+		let diskSeen = next.diskSeen;
+		let merged = false;
+		if (
+			diskSeen !== undefined &&
+			!sameCiphertext(diskSeen, (await readDecodedBlob()).blob.entriesCiphertext)
+		) {
+			// This write's own versions first, so one with the same stamp as the disk's stays this one.
+			await writeEntriesBlob(mergeEntriesPayload(payload, await readEntriesPayload()));
+			diskSeen = null;
+			merged = true;
+		} else {
+			await writeEntriesBlob(payload, (written) => {
+				if (diskSeen !== undefined) diskSeen = written;
+			});
+		}
+		// It's on disk now, whatever the index does.
+		crypto.notifyExternalChange?.();
 		await autofill.setIndex(toAutofillIndex(next.entries), indexLease);
-		return next;
+		// Last, so the read this asks for comes after the caller has committed.
+		if (merged) onDiskMerged?.();
+		return diskSeen === undefined ? next : { ...next, diskSeen };
 	};
 
 	// Validate at the seam (reject before encrypt), but persist the original value:
@@ -556,7 +602,7 @@ export function createEntryMutations(deps: EntryMutationsDeps): EntryMutations {
 
 		// One encrypt-and-write for the whole batch (not N), so a large import is a
 		// single disk write.
-		importMany: async (current, items, files = []) => {
+		importMany: async (current, items, files = [], opts = {}) => {
 			const valid = items.map(validate);
 			const c = await clock();
 			const stamps = new Map(current.stamps);
@@ -567,20 +613,34 @@ export function createEntryMutations(deps: EntryMutationsDeps): EntryMutations {
 				stamps.set(id, hlc);
 				causal.set(id, nextCausal({ hlc, bases: [], held: [] }));
 				// Imported entries start with no changelog or part stamps; an import file cannot seed them.
+				const entry = withPasswordChangelog(
+					{
+						id,
+						...data,
+						createdAt: data.createdAt ?? hlc.wall,
+						updatedAt: data.updatedAt ?? hlc.wall,
+					},
+					undefined,
+					hlc.wall,
+				);
 				return withPartStamps(
-					withPasswordChangelog(
-						{
-							id,
-							...data,
-							createdAt: data.createdAt ?? hlc.wall,
-							updatedAt: data.updatedAt ?? hlc.wall,
-						},
-						undefined,
-						hlc.wall,
-					),
+					opts.ownVault ? withCarriedPasswordChangelog(entry, data) : entry,
 					undefined,
 					hlc,
 				);
+			});
+			const copies = new Map<string, EntryData[]>();
+			for (const { id, copy } of opts.matched ?? []) {
+				copies.set(id, [...(copies.get(id) ?? []), copy]);
+			}
+			// Like setTags: an edit that syncs, with `updatedAt` left alone.
+			const entries = current.entries.map((e) => {
+				const next = (copies.get(e.id) ?? []).reduce<Entry>(foldCarriedCopy, e);
+				if (next === e) return e;
+				const version = editVersion(current, e.id, c.send());
+				stamps.set(e.id, version.hlc);
+				causal.set(e.id, version.causal);
+				return withPartStamps(next, priorOf(current, e.id), version.hlc);
 			});
 			const known = new Set(current.entries.map((e) => e.id));
 			const placed = files.map(({ sealed, ...on }) => {
@@ -593,7 +653,7 @@ export function createEntryMutations(deps: EntryMutationsDeps): EntryMutations {
 			});
 			return persist({
 				...current,
-				entries: [...current.entries, ...withIds],
+				entries: [...entries, ...withIds],
 				stamps,
 				causal,
 				manifest:

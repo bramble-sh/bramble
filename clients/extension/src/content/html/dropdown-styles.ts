@@ -11,7 +11,7 @@ export const dropdownStyles = html`
 				color-scheme: light dark;
 				--tp-surface: #ffffff; /* --popover */
 				--tp-foreground: oklch(20.5% 0 0); /* --popover-foreground */
-				--tp-muted: oklch(55.6% 0 0); /* --muted-foreground */
+				--tp-muted: oklch(52% 0 0); /* --muted-foreground */
 				--tp-border: oklch(87% 0 0); /* --border */
 				--tp-primary: oklch(20.5% 0 0); /* --primary */
 				--tp-on-primary: #ffffff; /* --primary-foreground */
@@ -124,6 +124,24 @@ export const dropdownStyles = html`
 				transition: color 0.12s ease;
 			}
 			.tp-item:hover .tp-launch {
+				color: var(--tp-foreground);
+			}
+			.tp-new-login {
+				display: flex;
+				align-items: center;
+				gap: 6px;
+				width: 100%;
+				padding: 6px 12px;
+				border: 0;
+				border-top: 1px solid var(--tp-border);
+				background: none;
+				color: var(--tp-muted);
+				font: inherit;
+				font-size: 12px;
+				text-align: left;
+				cursor: pointer;
+			}
+			.tp-new-login:hover {
 				color: var(--tp-foreground);
 			}
 			.tp-avatar-suggest {

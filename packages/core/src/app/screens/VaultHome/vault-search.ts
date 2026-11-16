@@ -16,6 +16,8 @@ const SORT_KEYS = [
 ] as const;
 export type SortKey = (typeof SORT_KEYS)[number];
 
+export const isSortKey = (v: unknown): v is SortKey => SORT_KEYS.includes(v as SortKey);
+
 /** The Overview cards as filters: every item, breached logins, or the logins that are not. */
 const HEALTH_FILTERS = ["all", "atRisk", "strong"] as const;
 export type HealthFilter = (typeof HEALTH_FILTERS)[number];
@@ -48,7 +50,8 @@ export const DEFAULT_SEARCH: VaultSearch = {
 };
 
 // Route search-param validator. All-optional (`.catch` drops garbage) so bad
-// params fall back to DEFAULT_SEARCH and `navigate({ to: "/vault" })` needs no search.
+// params fall back to DEFAULT_SEARCH (the sort to the remembered one, prefs.vaultSort) and
+// `navigate({ to: "/vault" })` needs no search.
 export const vaultSearchSchema = z.object({
 	q: z.string().optional().catch(undefined),
 	type: z.enum(TYPE_FILTERS).optional().catch(undefined),
@@ -63,8 +66,10 @@ export interface SearchableEntry {
 	id: string;
 	name: string;
 	type: EntryType;
-	/** Pre-lowercased haystack (name, username, urls, custom fields, ...). */
+	/** Pre-lowercased haystack (name, username, urls, notes, custom fields, ...). */
 	searchText: string;
+	/** `searchText` split by rank, best first: name, then username and the like, then notes. */
+	searchTiers?: readonly string[];
 	createdAt?: number;
 	updatedAt?: number;
 	lastUsedAt?: number;
@@ -75,6 +80,13 @@ export interface SearchableEntry {
 	hasFiles?: boolean;
 	/** A login whose password is in a known breach (and breach checks are on). */
 	leaked?: boolean;
+	/** A login whose password another live login also uses. */
+	reused?: boolean;
+}
+
+/** What the Overview's At Risk card counts and lists. */
+export function isAtRisk(item: Pick<SearchableEntry, "leaked" | "reused">): boolean {
+	return item.leaked === true || item.reused === true;
 }
 
 /** Split a raw query into lowercased tokens. */
@@ -184,15 +196,28 @@ export function filterAndSortEntries<T extends SearchableEntry>(
 		if (search.type !== "all" && item.type !== search.type) return false;
 		if (search.attachments && !item.hasFiles) return false;
 		// The same tests the Overview counts with, so a card lists exactly what it counted.
-		if (search.health === "atRisk" && !item.leaked) return false;
-		if (search.health === "strong" && (item.type !== "login" || item.leaked)) return false;
+		if (search.health === "atRisk" && !isAtRisk(item)) return false;
+		if (search.health === "strong" && (item.type !== "login" || isAtRisk(item))) return false;
 		// Every tag token must match some tag, as with text tokens: two of them narrow.
 		const keys = item.tagKeys;
 		if (tags.length > 0 && !tags.every((t) => keys?.some((k) => k.startsWith(t)))) return false;
 		return text.every((tok) => item.searchText.includes(tok));
 	});
 	const cmp = COMPARATORS[search.sort];
-	if (!matchedIds?.size) return filtered.sort(cmp);
-	const rank = (i: SearchableEntry) => (matchedIds.has(i.id) ? 0 : 1);
-	return filtered.sort((a, b) => rank(a) - rank(b) || cmp(a, b));
+	const tiers = new Map(filtered.map((item) => [item.id, matchTier(item, text)]));
+	const tier = (i: SearchableEntry) => tiers.get(i.id) ?? 0;
+	const matched = (i: SearchableEntry) => (matchedIds?.has(i.id) ? 0 : 1);
+	return filtered.sort((a, b) => tier(a) - tier(b) || matched(a) - matched(b) || cmp(a, b));
+}
+
+/** How well an item matches, 0 best: the weakest tier any word is found in. 0 with no words. */
+function matchTier(item: SearchableEntry, words: string[]): number {
+	const tiers = item.searchTiers;
+	if (!tiers || words.length === 0) return 0;
+	return Math.max(
+		...words.map((word) => {
+			const at = tiers.findIndex((t) => t.includes(word));
+			return at === -1 ? tiers.length : at;
+		}),
+	);
 }

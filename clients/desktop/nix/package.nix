@@ -58,7 +58,7 @@ rustPlatform.buildRustPackage (finalAttrs: {
     inherit (finalAttrs) pname version src;
     pnpm = pnpm_10;
     fetcherVersion = 3;
-    hash = "sha256-v1CVj8oRY8rJV19NKaQH9VoggHnjbfqKnx7cRWWsD3k=";
+    hash = "sha256-S8uuKiBRmYEwpAzrBa2nKiPH4+Se8Oot1xwhOgeFUEE=";
   };
 
   postPatch = ''
@@ -135,6 +135,11 @@ rustPlatform.buildRustPackage (finalAttrs: {
   # The crate's own tests need no display and are worth running here, but they are the shell's,
   # not the workspace's: `pnpm test` belongs to CI.
   doCheck = true;
+  # The sandbox has no CA roots, and reqwest builds no client without them, even for the
+  # plain-HTTP upload test in stream.rs. cacert's hook sets SSL_CERT_FILE.
+  nativeCheckInputs = [ cacert ];
+  # Nor a network: with only loopback, the WebRTC engine gathers no candidates to connect on.
+  checkFlags = [ "--skip=native_webrtc::tests::the_engine_opens_a_channel_in_this_apps_build" ];
 
   meta = {
     description = "Offline-first password manager with direct device-to-device sync";

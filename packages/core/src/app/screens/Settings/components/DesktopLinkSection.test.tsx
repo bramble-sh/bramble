@@ -1,7 +1,7 @@
 /** @vitest-environment happy-dom */
 import { i18n } from "@lingui/core";
 import { I18nProvider } from "@lingui/react";
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { type Platform, PlatformProvider } from "../../../../context/PlatformContext";
 import type { Entry } from "../../../../hooks/useVault";
@@ -15,10 +15,15 @@ const h = vi.hoisted(() => ({
 	entries: [] as Entry[],
 	vaults: [] as { id: string; label: string; createdAt: number }[],
 	groupOf: new Map<string, string>(),
+	/** Holds an import open, to look at the screen during it. */
+	importHold: null as Promise<void> | null,
+	/** The app says its vault is empty, so linking combines without asking. */
+	desktopEmpty: false,
 	/** Ordered log of what the flow did, so ordering is assertable rather than assumed. */
 	steps: [] as string[],
 	imported: null as unknown[] | null,
 	joinLabel: null as string | undefined | null,
+	joinViaLink: undefined as boolean | undefined,
 	joinFails: false,
 	invite: null as string | null,
 	activeVault: "v1",
@@ -36,6 +41,14 @@ const h = vi.hoisted(() => ({
 	canPopOut: false,
 	poppedOut: 0,
 	claims: 0,
+	/** What desktopLink.start() resolves with. */
+	startResult: { id: "L1", sas: { emoji: [0, 1, 2, 3, 4, 5, 6], digits: "1234 5678 9012" } } as
+		| { id: string; sas: { emoji: number[]; digits: string } }
+		| { legacy: true },
+	confirms: [] as [string, boolean][],
+	/** How many vaults still have a link after an unlink. */
+	remaining: 0,
+	syncEvent: null as ((e: { kind: string; sas?: string; sasEmoji?: number[] }) => void) | null,
 }));
 
 vi.mock("../../../hooks/usePopOut", () => ({
@@ -49,23 +62,48 @@ vi.mock("../../../hooks/usePopOut", () => ({
 
 vi.mock("../../../../hooks/useVault", async (importOriginal) => ({
 	...(await importOriginal<typeof import("../../../../hooks/useVault")>()),
-	useVault: () => ({ entries: h.entries }),
+	useVault: () => ({ entries: h.entries, files: [], conflicts: new Map() }),
 	useVaultActions: () => ({
-		startJoin: async (_code: string, _unlock: unknown, label?: string) => {
+		startJoin: async (
+			_code: string,
+			_unlock: unknown,
+			label?: string,
+			opts?: { viaLink?: boolean },
+		) => {
+			h.joinViaLink = opts?.viaLink;
 			h.steps.push("join");
 			h.joinLabel = label;
 			if (h.joinFails) throw new Error("join failed");
+			// The desktop's vault is now the open one, as after a real join.
+			h.activeVault = "joined";
+			return "joined";
 		},
 		importEntries: async (items: unknown[]) => {
 			h.steps.push("import");
+			await h.importHold;
 			h.imported = items;
+			return [];
 		},
+		readEntries: () => [],
+		readOpenVaultFromDisk: async () => ({
+			entries: h.entries,
+			files: [],
+			settings: undefined,
+			conflicted: 0,
+			unreadable: 0,
+		}),
+		readSetting: () => undefined,
+		writeSetting: async () => {},
 	}),
 }));
 
 vi.mock("../../../../hooks/useVaultRegistry", () => ({
 	useVaultRegistry: () => ({
 		vaults: h.vaults,
+		activeId: h.vaults.length ? h.activeVault : undefined,
+		hide: async () => {
+			h.steps.push("hide");
+		},
 		syncKey: (k: string) => `${k}:${h.activeVault}`,
 	}),
 }));
@@ -78,18 +116,28 @@ vi.mock("../../../../sync/enrollment", async (importOriginal) => ({
 
 const platform = {
 	target: "chromium",
+	crypto: {},
 	storage: {
+		readVaultBlob: async () => new Uint8Array([1]),
 		getMeta: async (key: string) => {
+			if (!key.startsWith("sync.group:")) return undefined;
 			const id = key.split(":")[1] ?? "";
 			const group = h.groupOf.get(id);
 			if (!group) return undefined;
 			return {
 				groupKey: group,
-				roster: { devices: (h.rosterOf.get(id) ?? []).map((publicKey) => ({ publicKey })) },
+				roster: {
+					devices: (h.rosterOf.get(id) ?? []).map((publicKey) => ({ publicKey, label: publicKey })),
+				},
 			};
 		},
 	},
-	shell: { onSyncEvent: () => () => {} },
+	shell: {
+		onSyncEvent: (cb: (e: { kind: string; sas?: string; sasEmoji?: number[] }) => void) => {
+			h.syncEvent = cb;
+			return () => {};
+		},
+	},
 	desktopLink: {
 		status: async () => ({ paired: h.paired, pairedAt: 1, permitted: h.permitted }),
 		claimSyncInvite: async () => {
@@ -97,8 +145,23 @@ const platform = {
 			return h.invite;
 		},
 		desktopSyncKey: async () => h.desktopKey,
+		vaultSummary: async () => (h.desktopEmpty ? { name: "Home", empty: true, entries: 0 } : null),
+		start: async () => h.startResult,
+		confirm: async (id: string, matches: boolean) => {
+			h.confirms.push([id, matches]);
+			if (!matches) throw new Error("The symbols did not match, so nothing was linked.");
+			h.paired = true;
+		},
 		unlink: async () => {
 			h.steps.push("unlink");
+			return { remaining: h.remaining };
+		},
+		attach: async (vaultId: string) => {
+			h.steps.push(`attach:${vaultId}`);
+			return true;
+		},
+		abandon: async () => {
+			h.steps.push("abandon");
 		},
 		// A getter, so a test can model a host with no runtime permission to ask for.
 		get permission() {
@@ -121,6 +184,14 @@ const platform = {
 const entry = (id: string): Entry =>
 	({ id, kind: "login", name: id, username: "u", password: "p", urls: [] }) as unknown as Entry;
 
+/** Mount a vault with no link of its own, and link it: each vault links for itself. */
+async function mountAndLink() {
+	h.paired = false;
+	mount();
+	fireEvent.click(await screen.findByRole("button", { name: /^link$/i }));
+	fireEvent.click(await screen.findByRole("button", { name: /they match/i }));
+}
+
 function mount() {
 	return render(
 		<I18nProvider i18n={i18n}>
@@ -141,9 +212,12 @@ afterEach(() => {
 	h.entries = [];
 	h.vaults = [];
 	h.groupOf.clear();
+	h.importHold = null;
+	h.desktopEmpty = false;
 	h.steps.length = 0;
 	h.imported = null;
 	h.joinLabel = null;
+	h.joinViaLink = undefined;
 	h.joinFails = false;
 	h.invite = null;
 	h.activeVault = "v1";
@@ -157,6 +231,9 @@ afterEach(() => {
 	h.canPopOut = false;
 	h.poppedOut = 0;
 	h.claims = 0;
+	h.startResult = { id: "L1", sas: { emoji: [0, 1, 2, 3, 4, 5, 6], digits: "1234 5678 9012" } };
+	h.confirms = [];
+	h.remaining = 0;
 });
 
 describe("what a desktop connect will do to this browser", () => {
@@ -166,112 +243,208 @@ describe("what a desktop connect will do to this browser", () => {
 		h.vaults = [{ id: "v1", label: "Personal", createdAt: 1 }];
 		h.groupOf.set("v1", "GROUP");
 		h.invite = "code";
-		mount();
+		await mountAndLink();
 
 		expect(await screen.findByText(/already share this vault/i)).toBeTruthy();
 		expect(screen.queryByLabelText(/master password/i)).toBeNull();
 	});
 
-	it("says a second vault is being added, and why they cannot be combined", async () => {
+	it("says it stays in this vault when this vault is the one already shared", async () => {
 		h.vaults = [{ id: "v1", label: "Personal", createdAt: 1 }];
-		h.groupOf.set("v1", "OTHER-GROUP");
+		h.groupOf.set("v1", "GROUP");
 		h.invite = "code";
-		mount();
+		await mountAndLink();
 
-		expect(await screen.findByText(/add the desktop's vault/i)).toBeTruthy();
-		expect(screen.getByText(/existing vaults stay as they are/i)).toBeTruthy();
+		expect(await screen.findByText(/this vault already syncs with the desktop app/i)).toBeTruthy();
+		expect(screen.getByRole("button", { name: /^link$/i })).toBeTruthy();
+		expect(screen.queryByText(/switches you to it/i)).toBeNull();
 	});
 
-	it("names the vault it creates after the desktop app", async () => {
-		// A blank "Vault 2" appearing mid-flow is what made this feel like data loss.
+	it("offers to open the other vault when that one is already shared", async () => {
+		h.vaults = [
+			{ id: "v1", label: "Personal", createdAt: 1 },
+			{ id: "v2", label: "Work", createdAt: 2 },
+		];
+		h.groupOf.set("v2", "GROUP");
+		h.invite = "code";
+		await mountAndLink();
+
+		expect(await screen.findByText(/switches you to it/i)).toBeTruthy();
+		expect(screen.getByRole("button", { name: /open that vault/i })).toBeTruthy();
+	});
+
+	it("asks whether to combine when both sides have entries", async () => {
 		h.vaults = [{ id: "v1", label: "Personal", createdAt: 1 }];
 		h.groupOf.set("v1", "OTHER-GROUP");
+		h.entries = [entry("a")];
 		h.invite = "code";
-		mount();
-		await screen.findByText(/add the desktop's vault/i);
+		await mountAndLink();
 
-		fireEvent.change(screen.getByLabelText(/master password/i), { target: { value: "pw" } });
-		fireEvent.click(screen.getByRole("button", { name: /^sync$/i }));
+		expect(await screen.findByText(/you have two vaults/i)).toBeTruthy();
+		expect(screen.getByRole("radio", { name: /combine into one/i })).toBeTruthy();
+		expect(screen.getByRole("radio", { name: /keep them separate/i })).toBeTruthy();
+	});
 
-		await waitFor(() => expect(h.joinLabel).toBe("Desktop vault"));
+	it("lets the vault arrive under its own name", async () => {
+		// The name follows the vault to every device, so nothing is named here.
+		h.vaults = [{ id: "v1", label: "Personal", createdAt: 1 }];
+		h.groupOf.set("v1", "OTHER-GROUP");
+		h.entries = [entry("a")];
+		h.invite = "code";
+		await mountAndLink();
+		await screen.findByText(/you have two vaults/i);
+
+		fireEvent.click(screen.getByRole("radio", { name: /keep them separate/i }));
+		fireEvent.change(screen.getByLabelText(/^master password$/i), { target: { value: "pw" } });
+		fireEvent.click(screen.getByRole("button", { name: /^continue$/i }));
+
+		await waitFor(() => expect(h.joinViaLink).toBe(true));
+		expect(h.joinLabel).toBeUndefined();
+	});
+
+	it("joins over the link, never the relay", async () => {
+		h.vaults = [{ id: "v1", label: "Personal", createdAt: 1 }];
+		h.groupOf.set("v1", "OTHER-GROUP");
+		h.entries = [entry("a")];
+		h.invite = "code";
+		await mountAndLink();
+		await screen.findByText(/you have two vaults/i);
+
+		fireEvent.click(screen.getByRole("radio", { name: /keep them separate/i }));
+		fireEvent.change(screen.getByLabelText(/^master password$/i), { target: { value: "pw" } });
+		fireEvent.click(screen.getByRole("button", { name: /^continue$/i }));
+
+		await waitFor(() => expect(h.joinViaLink).toBe(true));
 	});
 });
 
-describe("carrying this vault's entries across", () => {
-	it("is not offered when there is nothing to carry", async () => {
-		h.vaults = [{ id: "v1", label: "Personal", createdAt: 1 }];
-		h.groupOf.set("v1", "OTHER-GROUP");
-		h.invite = "code";
-		mount();
-		await screen.findByText(/add the desktop's vault/i);
-
-		expect(screen.queryByRole("checkbox")).toBeNull();
-	});
-
-	it("copies the entries in AFTER the join, so they land in the new vault", async () => {
-		// Order is the whole correctness argument: the two vaults have different keys and only one
-		// is loaded at a time, so the entries are read while this vault is open and written once
-		// the other one is. Importing first would put them back where they already were.
+describe("when both sides have entries", () => {
+	function twoVaults() {
 		h.vaults = [{ id: "v1", label: "Personal", createdAt: 1 }];
 		h.groupOf.set("v1", "OTHER-GROUP");
 		h.entries = [entry("a"), entry("b")];
 		h.invite = "code";
-		mount();
-		await screen.findByText(/add the desktop's vault/i);
+	}
 
-		fireEvent.click(screen.getByRole("checkbox"));
-		fireEvent.change(screen.getByLabelText(/master password/i), { target: { value: "pw" } });
-		fireEvent.click(screen.getByRole("button", { name: /^sync$/i }));
+	async function choose(name: RegExp) {
+		await mountAndLink();
+		await screen.findByText(/you have two vaults/i);
+		fireEvent.click(screen.getByRole("radio", { name }));
+		fireEvent.change(screen.getByLabelText(/^master password$/i), { target: { value: "pw" } });
+		fireEvent.click(screen.getByRole("button", { name: /^continue$/i }));
+	}
 
-		await waitFor(() => expect(h.steps).toEqual(["join", "import"]));
-		expect(h.imported).toHaveLength(2);
+	it("asks nothing about the old vault up front: that comes with the result", async () => {
+		twoVaults();
+		await mountAndLink();
+		await screen.findByText(/you have two vaults/i);
+		fireEvent.click(screen.getByRole("radio", { name: /combine into one/i }));
+		expect(screen.queryByRole("checkbox")).toBeNull();
 	});
 
-	it("strips the ids, so the copies are new entries rather than claims on the originals", async () => {
-		h.vaults = [{ id: "v1", label: "Personal", createdAt: 1 }];
-		h.groupOf.set("v1", "OTHER-GROUP");
-		h.entries = [entry("a")];
-		h.invite = "code";
-		mount();
-		await screen.findByText(/add the desktop's vault/i);
+	it("hides the old vault once the copy is done, and asks nothing", async () => {
+		twoVaults();
+		await choose(/combine into one/i);
+		await waitFor(() => expect(h.steps).toEqual(["join", "attach:joined", "import", "hide"]));
+		expect(screen.queryByRole("dialog")).toBeNull();
+		expect(screen.queryByRole("button", { name: /delete/i })).toBeNull();
+		expect(screen.queryByRole("button", { name: /^keep it$/i })).toBeNull();
+	});
 
-		fireEvent.click(screen.getByRole("checkbox"));
-		fireEvent.change(screen.getByLabelText(/master password/i), { target: { value: "pw" } });
-		fireEvent.click(screen.getByRole("button", { name: /^sync$/i }));
+	it("shows that a copy is under way, and that it can't be dismissed", async () => {
+		twoVaults();
+		let release = () => {};
+		h.importHold = new Promise((resolve) => {
+			release = resolve;
+		});
+		await choose(/combine into one/i);
+		await screen.findByText(/copying into the desktop's vault/i);
+		fireEvent.keyDown(window, { key: "Escape" });
+		expect(screen.getByText(/copying into the desktop's vault/i)).toBeTruthy();
+		release();
+		h.importHold = null;
+		await waitFor(() => expect(h.steps).toContain("hide"));
+		await waitFor(() => expect(screen.queryByText(/copying into the desktop's vault/i)).toBeNull());
+	});
 
-		await waitFor(() => expect(h.imported).not.toBeNull());
+	it("warns about other devices on the automatic combine too", async () => {
+		twoVaults();
+		h.rosterOf.set("v1", ["Phone"]);
+		h.desktopEmpty = true;
+		await mountAndLink();
+		await screen.findByText(/also syncs with Phone/i);
+	});
+
+	it("hides nothing when the vaults stay separate", async () => {
+		twoVaults();
+		await choose(/keep them separate/i);
+		await waitFor(() => expect(h.steps).toContain("join"));
+		expect(h.steps).not.toContain("hide");
+		expect(screen.queryByRole("dialog")).toBeNull();
+	});
+
+	it("keeps the choice for the retry after a mistyped password", async () => {
+		twoVaults();
+		h.joinFails = true;
+		await mountAndLink();
+		await screen.findByText(/you have two vaults/i);
+		fireEvent.click(screen.getByRole("radio", { name: /combine into one/i }));
+		fireEvent.change(screen.getByLabelText(/^master password$/i), { target: { value: "typo" } });
+		fireEvent.click(screen.getByRole("button", { name: /^continue$/i }));
+		await waitFor(() => expect(screen.getByText(/join failed/i)).toBeTruthy());
+
+		h.joinFails = false;
+		expect(
+			(screen.getByRole("radio", { name: /combine into one/i }) as HTMLInputElement).checked,
+		).toBe(true);
+		fireEvent.change(screen.getByLabelText(/^master password$/i), { target: { value: "pw" } });
+		fireEvent.click(screen.getByRole("button", { name: /^continue$/i }));
+
+		await waitFor(() => expect(h.steps).toContain("hide"));
+	});
+
+	it("no longer promises the old vault stays", async () => {
+		twoVaults();
+		await mountAndLink();
+		await screen.findByText(/you have two vaults/i);
+		expect(screen.queryByText(/before linking/i)).toBeNull();
+	});
+
+	it("asks combine or keep separate, with neither chosen for the user", async () => {
+		twoVaults();
+		await mountAndLink();
+		await screen.findByText(/you have two vaults/i);
+
+		for (const radio of screen.getAllByRole("radio"))
+			expect((radio as HTMLInputElement).checked).toBe(false);
+		fireEvent.change(screen.getByLabelText(/^master password$/i), { target: { value: "pw" } });
+		expect(
+			(screen.getByRole("button", { name: /^continue$/i }) as HTMLButtonElement).disabled,
+		).toBe(true);
+	});
+
+	it("combines by copying this vault's entries in AFTER the join", async () => {
+		twoVaults();
+		await choose(/combine into one/i);
+
+		// The link attaches to the vault the join opened before anything is copied into it.
+		await waitFor(() => expect(h.steps.slice(0, 3)).toEqual(["join", "attach:joined", "import"]));
+		expect(h.imported).toHaveLength(2);
 		expect(h.imported?.[0]).not.toHaveProperty("id");
 	});
 
-	it("copies nothing when the box is left unticked", async () => {
-		h.vaults = [{ id: "v1", label: "Personal", createdAt: 1 }];
-		h.groupOf.set("v1", "OTHER-GROUP");
-		h.entries = [entry("a")];
-		h.invite = "code";
-		mount();
-		await screen.findByText(/add the desktop's vault/i);
+	it("keeps them separate by copying nothing", async () => {
+		twoVaults();
+		await choose(/keep them separate/i);
 
-		fireEvent.change(screen.getByLabelText(/master password/i), { target: { value: "pw" } });
-		fireEvent.click(screen.getByRole("button", { name: /^sync$/i }));
-
-		await waitFor(() => expect(h.steps).toEqual(["join"]));
+		await waitFor(() => expect(h.steps).toEqual(["join", "attach:joined"]));
 		expect(h.imported).toBeNull();
 	});
 
 	it("copies nothing when the join fails, leaving the originals where they are", async () => {
-		// The safe way round: a failed join must not scatter copies into a vault that was never
-		// built, and the entries are still in the vault they came from either way.
-		h.vaults = [{ id: "v1", label: "Personal", createdAt: 1 }];
-		h.groupOf.set("v1", "OTHER-GROUP");
-		h.entries = [entry("a")];
-		h.invite = "code";
+		twoVaults();
 		h.joinFails = true;
-		mount();
-		await screen.findByText(/add the desktop's vault/i);
-
-		fireEvent.click(screen.getByRole("checkbox"));
-		fireEvent.change(screen.getByLabelText(/master password/i), { target: { value: "pw" } });
-		fireEvent.click(screen.getByRole("button", { name: /^sync$/i }));
+		await choose(/combine into one/i);
 
 		await waitFor(() => expect(screen.getByText(/join failed/i)).toBeTruthy());
 		expect(h.steps).toEqual(["join"]);
@@ -290,16 +463,17 @@ describe("whether the vault on screen is the one the app shares", () => {
 		expect(await screen.findByText(/this vault syncs with the desktop app/i)).toBeTruthy();
 	});
 
-	it("says the app shares a different vault when its device is absent here", async () => {
-		// The bug: the link is per-BROWSER and a sync group is per-VAULT, so "Connected" was true
-		// of the browser while implying something about whichever vault you were standing in.
+	it("offers no Link again and names no other vault: each vault's link is its own", async () => {
+		// Linking again replaced the profile's one link, so another vault lost its pairing.
 		h.vaults = [{ id: "v1", label: "Personal", createdAt: 1 }];
 		h.groupOf.set("v1", "GROUP");
 		h.rosterOf.set("v1", ["browser-key"]);
 		h.desktopKey = "desktop-key";
 		mount();
 
-		expect(await screen.findByText(/shares a different vault/i)).toBeTruthy();
+		expect(await screen.findByText(/^Linked /i)).toBeTruthy();
+		expect(screen.queryByText(/shares a different vault/i)).toBeNull();
+		expect(screen.queryByRole("button", { name: /^link again$/i })).toBeNull();
 	});
 
 	it("claims nothing when the app is not running to answer", async () => {
@@ -422,6 +596,19 @@ describe("the browser permission the link needs", () => {
 		await waitFor(() => expect(h.steps).toEqual(["unlink", "drop"]));
 	});
 
+	it("keeps the permission while another vault still has a link", async () => {
+		h.askable = true;
+		h.remaining = 1;
+		mount();
+
+		fireEvent.click(await screen.findByRole("button", { name: /disconnect/i }));
+		fireEvent.click(await screen.findByRole("button", { name: /stop using the app/i }));
+
+		await waitFor(() => expect(h.steps).toEqual(["unlink"]));
+		await new Promise((r) => setTimeout(r, 20));
+		expect(h.steps).toEqual(["unlink"]);
+	});
+
 	it("stays out of the way where the host has no permission to ask for", async () => {
 		// Mobile and desktop hold it from install. Absent must read as allowed, or the section
 		// would offer a grant button on hosts with nothing to grant.
@@ -429,7 +616,7 @@ describe("the browser permission the link needs", () => {
 		h.askable = false;
 		mount();
 
-		expect(await screen.findByLabelText(/pairing code/i)).toBeTruthy();
+		expect(await screen.findByRole("button", { name: /^link$/i })).toBeTruthy();
 		expect(screen.queryByRole("button", { name: /allow and continue/i })).toBeNull();
 	});
 });
@@ -447,6 +634,7 @@ describe("in the toolbar popup", () => {
 	});
 
 	it("leaves an invite unclaimed for the window, and offers it", async () => {
+		h.paired = false;
 		h.canPopOut = true;
 		h.invite = "INVITE";
 		mount();
@@ -464,5 +652,82 @@ describe("in the toolbar popup", () => {
 		mount();
 		expect(await screen.findByText("This vault syncs with the desktop app.")).toBeTruthy();
 		expect(screen.queryByRole("button", { name: "Continue in a window" })).toBeNull();
+	});
+});
+
+describe("linking by emoji", () => {
+	it("shows the symbols, and claims the desktop's vault once both screens confirm", async () => {
+		h.paired = false;
+		h.invite = "code";
+		mount();
+		fireEvent.click(await screen.findByRole("button", { name: /^link$/i }));
+		expect(await screen.findByText("1234 5678 9012")).toBeTruthy();
+
+		fireEvent.click(screen.getByRole("button", { name: /they match/i }));
+
+		await waitFor(() => expect(h.confirms).toEqual([["L1", true]]));
+		expect(await screen.findByText(/sync with the desktop app/i)).toBeTruthy();
+	});
+
+	it("offers the code for a desktop app that predates the emoji", async () => {
+		h.paired = false;
+		h.startResult = { legacy: true };
+		mount();
+		fireEvent.click(await screen.findByRole("button", { name: /^link$/i }));
+
+		expect(await screen.findByLabelText(/code from the desktop app/i)).toBeTruthy();
+	});
+
+	it("links nothing when the symbols do not match", async () => {
+		h.paired = false;
+		mount();
+		fireEvent.click(await screen.findByRole("button", { name: /^link$/i }));
+		fireEvent.click(await screen.findByRole("button", { name: /don't match/i }));
+
+		await waitFor(() => expect(h.confirms).toEqual([["L1", false]]));
+		expect(await screen.findByText(/nothing was linked/i)).toBeTruthy();
+		expect(h.claims).toBe(0);
+	});
+});
+
+describe("an older desktop app's copy", () => {
+	it("shows the symbols it asks to compare", async () => {
+		h.vaults = [{ id: "v1", label: "Personal", createdAt: 1 }];
+		h.groupOf.set("v1", "OTHER-GROUP");
+		h.entries = [entry("a")];
+		h.invite = "code";
+		await mountAndLink();
+		await screen.findByText(/you have two vaults/i);
+		act(() =>
+			h.syncEvent?.({ kind: "sas", sas: "1234 5678 9012", sasEmoji: [0, 1, 2, 3, 4, 5, 6] }),
+		);
+		expect(await screen.findByText(/approve only if they match/i)).toBeTruthy();
+	});
+});
+
+describe("a pairing is never half made", () => {
+	it("offers no Not now: closing the vault's offer lets the link go", async () => {
+		h.vaults = [{ id: "v1", label: "Personal", createdAt: 1 }];
+		h.invite = "INVITE";
+		await mountAndLink();
+		expect(await screen.findByText(/sync with the desktop app/i)).toBeTruthy();
+		expect(screen.queryByRole("button", { name: /not now/i })).toBeNull();
+
+		fireEvent.click(screen.getByRole("button", { name: /^close$/i }));
+
+		await waitFor(() => expect(h.steps).toContain("abandon"));
+	});
+
+	it("offers Try again beside a claim that brought no vault, and claims again", async () => {
+		h.vaults = [{ id: "v1", label: "Personal", createdAt: 1 }];
+		h.invite = null;
+		await mountAndLink();
+		expect(await screen.findByText(/didn't send its vault/i)).toBeTruthy();
+
+		h.invite = "INVITE";
+		fireEvent.click(screen.getByRole("button", { name: /try again/i }));
+
+		expect(await screen.findByText(/sync with the desktop app/i)).toBeTruthy();
+		expect(h.claims).toBe(2);
 	});
 });

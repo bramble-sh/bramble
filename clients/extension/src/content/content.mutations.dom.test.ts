@@ -35,10 +35,12 @@ vi.mock("./picker", () => ({
 		onDismiss: vi.fn(),
 		onUseSuggested: vi.fn(),
 		onUseAlias: vi.fn(),
+		onNewLogin: vi.fn(),
 		onRegenerate: vi.fn(),
 	},
 }));
 vi.mock("./corner-prompt", () => ({
+	handleCornerField: vi.fn(),
 	handleCornerPromptShow: vi.fn(),
 	queryCornerPrompt: vi.fn(),
 }));

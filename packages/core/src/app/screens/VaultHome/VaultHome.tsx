@@ -1,7 +1,15 @@
 import { Trans, useLingui } from "@lingui/react/macro";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import { ChevronDown, ListChecks, type LucideIcon, TrendingDown, TrendingUp } from "lucide-react";
-import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+	type ReactNode,
+	useCallback,
+	useEffect,
+	useLayoutEffect,
+	useMemo,
+	useRef,
+	useState,
+} from "react";
 import type { Entry, EntryType } from "../../../hooks/useVault";
 import { AddDropdown } from "../../components/AddDropdown";
 import { EntryRow } from "../../components/EntryRow";
@@ -19,7 +27,15 @@ import {
 	toggleSelected,
 } from "./selection";
 import { VaultSearchBar } from "./VaultSearchBar";
-import { filterAndSortEntries, type HealthFilter, type VaultSearch } from "./vault-search";
+import {
+	filterAndSortEntries,
+	type HealthFilter,
+	isAtRisk,
+	type VaultSearch,
+} from "./vault-search";
+
+/** Ties the list's scroller to the router's saved position for it. */
+export const VAULT_LIST_SCROLL_ID = "vault-list";
 
 /** List-ready projection of an entry: shared id/name plus mode-contributed display fields. */
 export interface VaultListItem {
@@ -30,6 +46,8 @@ export interface VaultListItem {
 	initials?: string;
 	secondary: string;
 	leaked?: boolean;
+	/** A login whose password another live login also uses. */
+	reused?: boolean;
 	passkeys?: number;
 	/** Sync kept other versions of it, or a concurrent delete, awaiting a choice. */
 	conflict?: boolean;
@@ -37,6 +55,8 @@ export interface VaultListItem {
 	launchUrl?: string;
 	// Lowercased text the search box matches against.
 	searchText: string;
+	// The same text by rank: name, then username and the like, then notes and custom fields.
+	searchTiers?: readonly string[];
 	createdAt?: number;
 	updatedAt?: number;
 	lastUsedAt?: number;
@@ -69,9 +89,13 @@ interface VaultHomeProps {
 	/** Home stats row: collapsed state + toggle, both persisted in prefs. */
 	statsCollapsed: boolean;
 	onToggleStats: () => void;
-	/** The store-review ask, on the rare turn there is one. A slot rather than a component so the
-	 * list screen keeps knowing nothing about stores; see app/review-nudge.ts. */
-	reviewNudge?: ReactNode;
+	/** A card under the list: the store-review ask or the default-password-manager offer. A slot
+	 * rather than a component so the list screen keeps knowing nothing about either. */
+	nudge?: ReactNode;
+	/** Where to open the list: the offset it had when this history entry was left (#200). */
+	initialScrollOffset?: number;
+	/** The list's offset as it unmounts. */
+	onLeave?: (offset: number) => void;
 }
 
 /** Vault list screen with search, password-health stats, and the entry rows. */
@@ -89,7 +113,9 @@ export function VaultHome({
 	tags,
 	statsCollapsed,
 	onToggleStats,
-	reviewNudge,
+	nudge,
+	initialScrollOffset,
+	onLeave,
 }: VaultHomeProps) {
 	const { t } = useLingui();
 	// A collapsed Overview hides the cards, so it lifts their filter too: the list is never
@@ -147,7 +173,7 @@ export function VaultHome({
 		let atRisk = 0;
 		let strong = 0;
 		for (const item of live) {
-			if (item.leaked) atRisk += 1;
+			if (isAtRisk(item)) atRisk += 1;
 			else if (item.type === "login") strong += 1;
 		}
 		return { atRisk, strong };
@@ -159,12 +185,20 @@ export function VaultHome({
 	const rowVirtualizer = useVirtualizer({
 		count: filtered.length,
 		getScrollElement: () => scrollRef.current,
-		// Rows are a uniform ~56px; +4 folds in the gap that was `space-y-1`.
-		// measureElement corrects any drift from the real rendered height.
-		estimateSize: () => 60,
+		// Rows are a uniform 60px; +4 folds in the gap that was `space-y-1`. Must be the real
+		// height: a remount forgets measurements, so a restored offset is read through this.
+		estimateSize: () => 64,
 		overscan: 8,
+		initialOffset: initialScrollOffset,
 		getItemKey: (index) => filtered[index]?.id ?? index,
 	});
+	const leave = useRef(onLeave);
+	useEffect(() => {
+		leave.current = onLeave;
+	});
+	// A layout cleanup runs before React detaches the list, so scrollTop is still on screen. The
+	// virtualizer's own offset can lag it (a scroll whose event hasn't been handled yet).
+	useLayoutEffect(() => () => leave.current?.(scrollRef.current?.scrollTop ?? 0), []);
 
 	return (
 		<main className="flex-1 min-h-0 flex flex-col w-full max-w-5xl mx-auto px-4 py-5">
@@ -254,7 +288,11 @@ export function VaultHome({
 						</Button>
 					</div>
 				)}
-				<div ref={scrollRef} className="flex-1 min-h-0 overflow-y-auto p-2">
+				<div
+					ref={scrollRef}
+					data-scroll-restoration-id={VAULT_LIST_SCROLL_ID}
+					className="flex-1 min-h-0 overflow-y-auto p-2"
+				>
 					{filtered.length > 0 ? (
 						<div className="relative w-full" style={{ height: rowVirtualizer.getTotalSize() }}>
 							{rowVirtualizer.getVirtualItems().map((row) => {
@@ -278,6 +316,7 @@ export function VaultHome({
 											icon={item.icon}
 											initials={item.initials}
 											leaked={item.leaked}
+											reused={item.reused}
 											passkeys={item.passkeys}
 											conflict={item.conflict}
 											copyItems={item.copyItems}
@@ -318,7 +357,7 @@ export function VaultHome({
 
 			{/* Below the list, and never during a bulk selection: mid-cleanup is not the moment, and
 			    the card would push the selection bar's targets around under the cursor. */}
-			{!selectMode && reviewNudge}
+			{!selectMode && nudge}
 		</main>
 	);
 }
@@ -346,7 +385,7 @@ function StatCard({ label, icon, count, tone, selected, onSelect }: StatCardProp
 			aria-pressed={selected}
 			disabled={count === 0 && !selected && tone !== undefined}
 			className={cn(
-				"relative block w-full overflow-hidden px-4 py-3 rounded-lg border text-left text-foreground bg-linear-to-br from-card to-background backdrop-blur-sm focus-visible:ring-2 focus-visible:ring-ring",
+				"relative block w-full overflow-hidden px-4 py-3 rounded-lg border text-left text-foreground bg-linear-to-br from-card to-background backdrop-blur-sm",
 				selected
 					? tone === "destructive"
 						? "border-destructive/60"

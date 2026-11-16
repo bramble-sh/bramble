@@ -1,6 +1,7 @@
 import { i18n } from "@lingui/core";
 import { Plural, Trans, useLingui } from "@lingui/react/macro";
-import { Pencil, Plus, Trash2, Unplug, Wifi, X } from "lucide-react";
+import { useNavigate } from "@tanstack/react-router";
+import { Check, Copy, Pencil, Plus, RefreshCw, Trash2, Unplug, Wifi, X } from "lucide-react";
 import { QRCodeSVG } from "qrcode.react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useCan, usePlatform } from "../../../../context/PlatformContext";
@@ -15,6 +16,7 @@ import {
 	SYNC_LAST_SYNCED_KEY,
 } from "../../../../sync";
 import { deriveIceUrl } from "../../../../sync/transport/ice";
+import { DEFAULT_RELAY, relayOrDefault } from "../../../../sync/transport/relay-url";
 import { formatDate } from "../../../../util/format-date";
 import { SasDisplay } from "../../../components/SasDisplay";
 import { AdvancedDisclosure } from "../../../components/ui/advanced-disclosure";
@@ -25,15 +27,22 @@ import { PasswordField } from "../../../components/ui/password-field";
 import { TextField } from "../../../components/ui/text-field";
 import { useDeviceNames } from "../../../hooks/useDeviceNames";
 import { Row, Section } from "./primitives";
+import { deviceNamer, fullStamp, shortStamp } from "./sync-log";
 
 const inputClass =
-	"w-full px-3 py-1.5 text-xs font-mono rounded-lg border border-border bg-transparent focus:outline-none focus:border-primary/50";
-const DEFAULT_RELAY = "wss://bramble-relay.flythenimbus.workers.dev";
+	"w-full px-3 py-1.5 text-xs font-mono rounded-lg border border-input-border bg-transparent focus:outline-none focus:border-primary";
 
 interface SyncGroup {
 	groupKey: string;
 	roster: RosterPayload;
 }
+
+/** One line of the sync log, and when it was logged. */
+interface LogLine {
+	at: number;
+	text: string;
+}
+const logLine = (text: string): LogLine => ({ at: Date.now(), text });
 
 const fingerprint = (publicKey: string): string => publicKey.replace(/[^a-z0-9]/gi, "").slice(0, 6);
 const addedOn = (ms: number): string => formatDate(ms);
@@ -100,6 +109,7 @@ export function SyncConnectSection() {
 	const { shell, storage } = usePlatform();
 	const { inviteDevice, removeDevice, verifyMasterPassword } = useVaultActions();
 	const { hasPasswordSlot } = useVault();
+	const navigate = useNavigate();
 	const { syncKey } = useVaultRegistry();
 	const canPerVaultSync = useCan("perVaultSync");
 	const { t } = useLingui();
@@ -128,14 +138,16 @@ export function SyncConnectSection() {
 	const { nameOf, rename, canRename } = useDeviceNames();
 	const [renamingId, setRenamingId] = useState<string | null>(null);
 	// Master-password gate before adding a device: the re-entered password admission-signs the new
-	// device (Item A). Open only for a password vault; a security-key-only vault skips it (no password
-	// to derive an admission key from, so the joiner is enrolled unsigned). See docs/p2p-sync-revocation-hardening.md.
+	// device (Item A). A vault without one may not pair. See docs/p2p-sync-revocation-hardening.md.
 	const [pwGateOpen, setPwGateOpen] = useState(false);
+	const [pwRequiredOpen, setPwRequiredOpen] = useState(false);
 	const [gatePassword, setGatePassword] = useState("");
 	const [gateError, setGateError] = useState<string | null>(null);
 	const [gateBusy, setGateBusy] = useState(false);
-	const [log, setLog] = useState<string[]>([]);
+	const [log, setLog] = useState<LogLine[]>([]);
 	const logRef = useRef<HTMLDivElement>(null);
+	const [logCopied, setLogCopied] = useState(false);
+	const [syncingNow, setSyncingNow] = useState(false);
 
 	// Group membership (source of truth for "are we paired, and with whom"). undefined
 	// while loading so we don't flash the onboarding UI over an existing group.
@@ -176,7 +188,8 @@ export function SyncConnectSection() {
 	// Persist on edit so the choice survives and ongoing sync + Settings pick it up.
 	const onRelayChange = (v: string) => {
 		setRelayUrl(v);
-		void storage.setMeta("sync.relay", v);
+		const url = v.trim();
+		void (url ? storage.setMeta("sync.relay", url) : storage.removeMeta("sync.relay")); // blank = hosted
 	};
 	const onIceChange = (v: string) => {
 		setIceUrl(v);
@@ -229,20 +242,36 @@ export function SyncConnectSection() {
 	// Stream transport status into the log for the panel's lifetime so enrollment
 	// progress shows on both sides. The inviter's connection happens after its pairing
 	// modal is dismissed, so a modal- or action-scoped subscription would miss it.
-	useEffect(() => shell.onSyncStatus((s) => setLog((prev) => [...prev, s])), [shell]);
+	useEffect(
+		() => shell.onSyncStatus((text, at) => setLog((prev) => [...prev, { at, text }])),
+		[shell],
+	);
 
 	// biome-ignore lint/correctness/useExhaustiveDependencies: scroll to newest on each line
 	useEffect(() => {
 		logRef.current?.scrollTo({ top: logRef.current.scrollHeight });
 	}, [log]);
 
+	const copyLog = async () => {
+		try {
+			// Without device names: copies go into public bug reports.
+			await navigator.clipboard.writeText(
+				log.map((l) => `${fullStamp(l.at)} ${l.text}`).join("\n"),
+			);
+			setLogCopied(true);
+			setTimeout(() => setLogCopied(false), 1500);
+		} catch {
+			// Clipboard can be blocked; the log stays on screen and selectable.
+		}
+	};
+
 	// TODO(i18n): note()/run() labels and ✅ messages below feed the hidden debug log
 	// (its render is commented out), so they're left untranslated for now.
-	const note = (line: string) => setLog((prev) => [...prev, line]);
+	const note = (line: string) => setLog((prev) => [...prev, logLine(line)]);
 	// Status streaming is a panel-lifetime subscription (below); here we just reset the
 	// log to the action's label and surface a thrown failure.
 	const run = async (label: string, fn: () => Promise<void>) => {
-		setLog([label]);
+		setLog([logLine(label)]);
 		try {
 			await fn();
 		} catch (e) {
@@ -320,20 +349,23 @@ export function SyncConnectSection() {
 	const sortedDevices = [...devices].sort((a, b) =>
 		a.publicKey === myPub ? -1 : b.publicKey === myPub ? 1 : b.addedAt - a.addedAt,
 	);
+	const nameInLog = deviceNamer(devices.map((d) => ({ publicKey: d.publicKey, name: nameOf(d) })));
+	const now = Date.now();
 
-	const addDevice = (password?: string) =>
+	const addDevice = (password: string) =>
 		run("creating pairing code…", async () => {
 			// A fresh invite; clear the previous one's expiry/failure.
 			setHostExpired(false);
 			setInviteError(null);
 			setAttemptNote(null);
-			setPairingCode(await inviteDevice(relayUrl.trim(), iceUrl.trim() || undefined, password));
+			setPairingCode(
+				await inviteDevice(relayOrDefault(relayUrl), iceUrl.trim() || undefined, password),
+			);
 			await refreshGroup();
 		});
-	// "Add device" entry point: a password vault confirms the master password first (it admission-signs
-	// the joiner); a security-key-only vault has no password to re-enter, so it enrolls directly.
+	// "Add device" entry point: confirm the master password first (it admission-signs the joiner).
 	const beginAddDevice = () => {
-		if (!hasPasswordSlot) return void addDevice();
+		if (!hasPasswordSlot) return void setPwRequiredOpen(true);
 		setGatePassword("");
 		setGateError(null);
 		setPwGateOpen(true);
@@ -370,6 +402,17 @@ export function SyncConnectSection() {
 			note(`error: ${(e as Error).message}`);
 		}
 	};
+	const syncNow = async () => {
+		setSyncingNow(true);
+		note("sync now: restarting");
+		try {
+			await shell.syncNow?.();
+		} catch (e) {
+			note(`error: ${(e as Error).message}`);
+		} finally {
+			setSyncingNow(false);
+		}
+	};
 	const disconnect = () =>
 		run("disconnecting…", async () => {
 			setConfirmDisconnect(false);
@@ -386,16 +429,33 @@ export function SyncConnectSection() {
 			{/* Live transport status log (offer sent / answer applied / ice connected /
 			    channel open) — surfaces enrollment + sync diagnostics in the dev panel. */}
 			{log.length > 0 && (
-				<div
-					ref={logRef}
-					className="max-h-40 overflow-y-auto rounded-lg border border-border bg-background/50 p-2 text-xs font-mono space-y-0.5"
-				>
-					{log.map((line, i) => (
-						// biome-ignore lint/suspicious/noArrayIndexKey: append-only status log
-						<div key={i} className="text-muted-foreground break-words">
-							{line}
-						</div>
-					))}
+				<div className="relative">
+					<div
+						ref={logRef}
+						data-selectable
+						className="max-h-40 overflow-y-auto rounded-lg border border-border bg-background/50 p-2 pr-9 text-xs font-mono space-y-0.5"
+					>
+						{log.map((line, i) => (
+							// biome-ignore lint/suspicious/noArrayIndexKey: append-only status log
+							<div key={i} className="text-muted-foreground break-words">
+								<span className="text-muted-foreground/60">{shortStamp(line.at, now)}</span>{" "}
+								<span>{nameInLog(line.text)}</span>
+							</div>
+						))}
+					</div>
+					<Button
+						variant="ghost"
+						size="none"
+						onClick={copyLog}
+						className="absolute top-1 right-1 p-1.5 rounded-md"
+						aria-label={t`Copy log`}
+					>
+						{logCopied ? (
+							<Check className="w-3.5 h-3.5 text-primary" />
+						) : (
+							<Copy className="w-3.5 h-3.5" />
+						)}
+					</Button>
 				</div>
 			)}
 
@@ -425,6 +485,18 @@ export function SyncConnectSection() {
 								<Trans>Waiting for a device to join…</Trans>
 							)}
 						</span>
+						{paired && !notSyncing && shell.syncNow && (
+							<Button
+								variant="secondary"
+								size="sm"
+								onClick={syncNow}
+								disabled={syncingNow}
+								className="ml-auto shrink-0 gap-1.5"
+							>
+								<RefreshCw className={`w-3.5 h-3.5 ${syncingNow ? "animate-spin" : ""}`} />{" "}
+								<Trans>Sync now</Trans>
+							</Button>
+						)}
 					</div>
 
 					{lastSynced && (
@@ -434,7 +506,7 @@ export function SyncConnectSection() {
 					)}
 
 					{unsigned.length > 0 && (
-						<p className="-mt-2 text-xs text-amber-600 dark:text-amber-500">
+						<p className="-mt-2 text-xs text-warning">
 							<Plural
 								value={unsigned.length}
 								one="# device has not signed its roster entry yet. Each device signs itself the next time Bramble opens on it; until then the others cannot tell it from an impostor."
@@ -475,7 +547,7 @@ export function SyncConnectSection() {
 												</span>
 											)}
 											{!d.sigKey && (
-												<span className="shrink-0 text-[10px] uppercase tracking-wide text-amber-600 border border-amber-500/40 rounded px-1 py-px dark:text-amber-500">
+												<span className="shrink-0 text-[10px] uppercase tracking-wide text-warning border border-amber-500/40 rounded px-1 py-px">
 													<Trans>Unsigned</Trans>
 												</span>
 											)}
@@ -500,7 +572,7 @@ export function SyncConnectSection() {
 												size="none"
 												onClick={arm}
 												aria-label={t`Remove ${nameOf(d) || "device"}`}
-												className="shrink-0 p-1 hover:text-red-500 transition-colors"
+												className="shrink-0 p-1 hover:text-destructive transition-colors"
 											>
 												<Trash2 className="w-4 h-4" />
 											</Button>
@@ -581,6 +653,35 @@ export function SyncConnectSection() {
 					)}
 				</>
 			)}
+
+			<Modal open={pwRequiredOpen} onClose={() => setPwRequiredOpen(false)} className="max-w-sm">
+				<div className="p-5 space-y-4">
+					<h2 className="text-base font-medium">
+						<Trans>Adding a device needs a master password</Trans>
+					</h2>
+					<p className="text-xs text-muted-foreground">
+						<Trans>
+							Pairing gives the new device your vault, so it has to be authorized with your master
+							password. Turn one on in Security, then come back to add the device.
+						</Trans>
+					</p>
+					<div className="flex justify-end gap-2">
+						<Button variant="secondary" size="sm" onClick={() => setPwRequiredOpen(false)}>
+							<Trans>Cancel</Trans>
+						</Button>
+						<Button
+							variant="primary"
+							size="sm"
+							onClick={() => {
+								setPwRequiredOpen(false);
+								void navigate({ to: "/settings", search: { tab: "security" } });
+							}}
+						>
+							<Trans>Turn on master password</Trans>
+						</Button>
+					</div>
+				</div>
+			</Modal>
 
 			<Modal
 				open={pwGateOpen}
@@ -715,7 +816,7 @@ export function SyncConnectSection() {
 								</p>
 								{/* A failed attempt that did NOT spend the code, so it sits alongside rather
 								    than replacing it. */}
-								{attemptNote !== null && <p className="text-xs text-yellow-500">{attemptNote}</p>}
+								{attemptNote !== null && <p className="text-xs text-warning">{attemptNote}</p>}
 								<div className="rounded-xl bg-white p-4">
 									<QRCodeSVG
 										value={pairingCode}

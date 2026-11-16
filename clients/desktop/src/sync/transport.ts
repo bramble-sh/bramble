@@ -19,11 +19,19 @@ import type {
 import { canonicalRosterEntry, RosterEntrySchema } from "@core/sync/roster";
 import { startEnroll } from "@core/sync/transport/enroll-host";
 import type { MeshSession } from "@core/sync/transport/peer-session";
+import { listen } from "@tauri-apps/api/event";
 import { desktopCrypto } from "../adapters/crypto";
 import { desktopSyncCrypto } from "../sync-crypto";
 import { emit, report } from "./bus";
 import { clearSyncIdentity, deviceKeypair, syncAdmissionSign } from "./keys";
-import { addToLocalRoster, clearGroupState, stopRosterSync, syncTargetVaultId } from "./roster";
+import { linkPeerSourceFor } from "./link-peers";
+import {
+	addToLocalRoster,
+	clearGroupState,
+	maybeStartRosterSync,
+	stopRosterSync,
+	syncTargetVaultId,
+} from "./roster";
 
 /** The inviter's material for admitting a joiner: a re-entered password and who is admitting. */
 interface Admission {
@@ -76,6 +84,8 @@ async function admitJoiner(
 // ---- the enrollment approval ----
 
 let session: MeshSession | null = null;
+/** Stops listening for the browser a link invite was bound to. */
+let stopLinkPaired: (() => void) | null = null;
 
 /**
  * The approval the host is parked on. Held at module scope rather than in a component because
@@ -121,6 +131,9 @@ export async function startEnrollInvite(opts: {
 	recoverySlots?: WireRecoverySlot[];
 	/** Lets this process admit the joiner itself rather than relying on the window. See admitJoiner. */
 	admission?: Admission;
+	/** Delivered to a browser over the link: the copy runs on the link, only with the browser
+	 * that paired in this dialog, and needs no second check. Never set for a phone's invite. */
+	viaLink?: boolean;
 }): Promise<void> {
 	const { privateKey, publicKey } = await deviceKeypair();
 	// Pinned now, for the same reason the VEK is: an invite stays open as long as the code is on
@@ -137,42 +150,65 @@ export async function startEnrollInvite(opts: {
 	// A new invite supersedes any prompt left over from the last one.
 	settleApproval(false);
 
-	session = await startEnroll("inviter", {
-		vekB64,
-		devicePubB64: publicKey,
-		devicePrivB64: privateKey,
-		// Park the transfer on the user's answer: authenticated is not authorized.
-		approve: (sas, label) =>
-			new Promise<boolean>((resolve) => {
-				pendingApproval = { sas: sas.digits, sasEmoji: sas.emoji, label, settle: resolve };
-				emit({ kind: "enroll-approval", sas: sas.digits, sasEmoji: sas.emoji, label });
-			}),
-		// The window closed: refuse anything parked on the prompt, and say so rather than
-		// leaving a dead prompt on screen.
-		onInviteExpired: () => {
-			settleApproval(false);
-			emit({ kind: "enroll-expired" });
-		},
-		onEnrollFailed: (message) => emit({ kind: "enroll-failed", message }),
-		onEnrollAttemptFailed: (message) => emit({ kind: "enroll-attempt-failed", message }),
-		// Write the roster here FIRST, then tell the UI. It does the same write, so ordering the
-		// two makes its read see this one rather than racing it.
-		onEnrolled: (entryJson) => {
-			void (async () => {
-				if (vaultId) await admitJoiner(vaultId, opts.admission, entryJson);
-				emit({ kind: "enrolled", entryJson });
-			})();
-		},
-		relayUrl: opts.relayUrl,
-		iceUrl: opts.iceUrl,
-		groupKeyB64: opts.groupKeyB64,
-		psk: opts.psk,
-		roster: opts.roster,
-		entries: opts.entries,
-		passwordCheck: opts.passwordCheck,
-		recoverySlots: opts.recoverySlots,
-		wasm: desktopSyncCrypto,
-		report,
+	/** Start the copy: over the link with no second check for a browser that linked by emoji, or
+	 * over the relay behind the emoji prompt for a phone. */
+	const begin = async (overLink: boolean, boundPeer?: string) => {
+		session = await startEnroll("inviter", {
+			vekB64,
+			devicePubB64: publicKey,
+			devicePrivB64: privateKey,
+			peerSource: overLink ? linkPeerSourceFor("enroll", () => boundPeer) : undefined,
+			// Park the transfer on the user's answer: authenticated is not authorized. An emoji link
+			// was already answered on both screens, and only that browser can hold its key.
+			approve: overLink
+				? async () => true
+				: (sas, label) =>
+						new Promise<boolean>((resolve) => {
+							pendingApproval = { sas: sas.digits, sasEmoji: sas.emoji, label, settle: resolve };
+							emit({ kind: "enroll-approval", sas: sas.digits, sasEmoji: sas.emoji, label });
+						}),
+			// The window closed: refuse anything parked on the prompt, and say so rather than
+			// leaving a dead prompt on screen.
+			onInviteExpired: () => {
+				settleApproval(false);
+				emit({ kind: "enroll-expired" });
+			},
+			onEnrollFailed: (message) => emit({ kind: "enroll-failed", message }),
+			onEnrollAttemptFailed: (message) => emit({ kind: "enroll-attempt-failed", message }),
+			// Write the roster here FIRST, then tell the UI. It does the same write, so ordering the
+			// two makes its read see this one rather than racing it.
+			onEnrolled: (entryJson) => {
+				void (async () => {
+					if (vaultId) await admitJoiner(vaultId, opts.admission, entryJson);
+					emit({ kind: "enrolled", entryJson });
+					// Sync starts on unlock, and only for a vault already in a group. A first pairing
+					// makes the group, so start it now that the new device is in the roster.
+					await maybeStartRosterSync();
+				})();
+			},
+			relayUrl: opts.relayUrl,
+			iceUrl: opts.iceUrl,
+			groupKeyB64: opts.groupKeyB64,
+			psk: opts.psk,
+			roster: opts.roster,
+			entries: opts.entries,
+			passwordCheck: opts.passwordCheck,
+			recoverySlots: opts.recoverySlots,
+			wasm: desktopSyncCrypto,
+			report,
+		});
+	};
+
+	stopLinkPaired?.();
+	stopLinkPaired = null;
+	if (!opts.viaLink) return begin(false);
+	// Rust binds the invite to the first browser that links while it is armed. Nothing starts
+	// until then.
+	let started = false;
+	stopLinkPaired = await listen<{ peerId: string }>("link-paired", (e) => {
+		if (started) return;
+		started = true;
+		void begin(true, e.payload.peerId);
 	});
 }
 
@@ -216,6 +252,8 @@ export async function stopEnrollInvite(): Promise<void> {
 	settleApproval(false);
 	session?.stop();
 	session = null;
+	stopLinkPaired?.();
+	stopLinkPaired = null;
 	report("invite closed");
 }
 

@@ -4,7 +4,7 @@
 // Usage:
 //   pnpm run build:windows --unsigned   cross-compiled here, throwaway key, for iterating
 //   pnpm run build:windows --arm64      the other architecture, cross-compiled
-//   pnpm run build:windows --ci-start   dispatch the GitHub build + SignPath signing, do not wait
+//   pnpm run build:windows --ci-start   dispatch the GitHub build + signing, do not wait
 //   pnpm run build:windows --ci-collect wait for it, download the signed installer, sign it here
 //
 // Two routes because the release build and the iteration build want opposite things.
@@ -13,11 +13,10 @@
 // Tauri supports that and calls it a last resort; it is fine for something that is going into a
 // VM and nowhere else. It cannot be Authenticode-signed.
 //
-// **Releasing** cannot use that route at all, and the reason is not technical quality but
-// provenance: SignPath's free tier for open source projects verifies where a binary came from,
-// and requires every job up to the signing request to have run on a GitHub-hosted agent, with the
-// origin metadata supplied by GitHub rather than by the build. So a release installer is built by
-// .github/workflows/sign-windows.yml and signed there. Windows is the only artifact Bramble ships
+// **Releasing** goes through GitHub instead, whichever signer WINDOWS_SIGNER picks. Azure Artifact
+// Signing's signtool plugin runs only on Windows and its identity is reachable only from that
+// workflow's environment, through OIDC; SignPath verifies the whole build ran on GitHub-hosted
+// runners. So a release installer is built by .github/workflows/sign-windows.yml and signed there. Windows is the only artifact Bramble ships
 // that is not built on the maintainer's machine. See docs/desktop-port.md.
 //
 // The updater key does not follow it into CI. That key is the root of trust for every update the
@@ -153,8 +152,7 @@ function ciStartBuild(): void {
 	writeFileSync(RUN_ID_FILE, `${runId}\n`);
 	console.log(
 		`build-windows: run ${runId} started.\n` +
-			"  It will WAIT for you to approve the signing request in SignPath.\n" +
-			`  https://github.com/flythenimbus/bramble/actions/runs/${runId}`,
+			`  https://github.com/bramble-sh/bramble/actions/runs/${runId}`,
 	);
 }
 
@@ -165,13 +163,13 @@ function ciCollectBuild(): void {
 		fail("build-windows: no dispatched run recorded; run --ci-start first");
 	const runId = readFileSync(RUN_ID_FILE, "utf8").trim();
 
-	const runUrl = `https://github.com/flythenimbus/bramble/actions/runs/${runId}`;
+	const runUrl = `https://github.com/bramble-sh/bramble/actions/runs/${runId}`;
 	console.log(
-		`build-windows: waiting on ${runUrl} for SignPath's approval…\n` +
-			"  Approve the newest signing request in SignPath once the installer is built; they email the link.",
+		`build-windows: waiting on ${runUrl} to build and sign…\n` +
+			"  With SignPath as the signer, approve the newest signing request there once it is built.",
 	);
 	try {
-		// Once a minute: the wait can last hours, and a workflow token gets 1,000 requests an hour.
+		// Once a minute: a workflow token gets 1,000 requests an hour.
 		execFileSync("gh", ["run", "watch", runId, "--exit-status", "--interval", "60"], {
 			cwd: ROOT,
 			stdio: "inherit",
@@ -179,7 +177,7 @@ function ciCollectBuild(): void {
 	} catch {
 		fail(
 			`build-windows: run ${runId} did not succeed.\n` +
-				`  https://github.com/flythenimbus/bramble/actions/runs/${runId}`,
+				`  https://github.com/bramble-sh/bramble/actions/runs/${runId}`,
 		);
 	}
 

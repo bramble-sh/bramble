@@ -4,6 +4,7 @@
 //! the VEK (see `crypto`), the vault files (see `storage`), and later the sync hub, the
 //! spotlight window, auto-type, and the browser IPC. See docs/desktop-port.md.
 
+mod autolock;
 mod autostart;
 mod backup;
 mod biometric;
@@ -19,6 +20,9 @@ mod ipc;
 mod lifetime;
 mod manifest;
 mod menu;
+// WebKitGTK has no WebRTC; see the module.
+#[cfg(target_os = "linux")]
+mod native_webrtc;
 mod net;
 mod pairing;
 mod secure_store;
@@ -185,6 +189,7 @@ pub fn run() {
             // The backup schedule. Runs from here, not from a JS timer, because the main window
             // is usually hidden and a hidden webview's timers are throttled. See `backup`.
             backup::start_ticker(app.handle().clone());
+            autolock::start(app.handle().clone());
 
             // The browser proxy's end of the pipe. Bound at startup rather than on first
             // pairing: an extension that is already paired reconnects whenever its browser
@@ -310,16 +315,16 @@ pub fn run() {
             spotlight::spotlight_open_main,
             spotlight::spotlight_open_entry,
             spotlight::spotlight_set_height,
-            pairing::pairing_begin,
-            pairing::pairing_cancel,
-            pairing::pairing_is_open,
             pairing::pairing_list,
             pairing::pairing_forget,
+            pairing::pairing_pin_link,
+            pairing::pairing_forget_in_vault,
             pairing::pairing_public_key,
             index_store::spotlight_search,
             index_store::spotlight_copy_password,
             index_store::link_set_index,
             index_store::link_clear_index,
+            autolock::autolock_touch,
             socket::link_sync_send,
             socket::link_sync_peers,
             socket::link_blob_send,
@@ -327,6 +332,11 @@ pub fn run() {
             socket::link_blob_peers,
             socket::link_arm_sync_invite,
             socket::link_clear_sync_invite,
+            socket::link_window_begin,
+            socket::link_window_cancel,
+            socket::link_pair_answer,
+            socket::link_pair_pending,
+            socket::link_set_vault_summary,
             socket::link_set_sync_identity,
             socket::spotlight_active_tab,
             socket::spotlight_request_fill,
@@ -345,6 +355,26 @@ pub fn run() {
             stream::stream_finish,
             stream::stream_abort,
             net::http_send,
+            #[cfg(target_os = "linux")]
+            native_webrtc::webrtc_create_peer,
+            #[cfg(target_os = "linux")]
+            native_webrtc::webrtc_create_data_channel,
+            #[cfg(target_os = "linux")]
+            native_webrtc::webrtc_create_offer,
+            #[cfg(target_os = "linux")]
+            native_webrtc::webrtc_create_answer,
+            #[cfg(target_os = "linux")]
+            native_webrtc::webrtc_set_local_description,
+            #[cfg(target_os = "linux")]
+            native_webrtc::webrtc_set_remote_description,
+            #[cfg(target_os = "linux")]
+            native_webrtc::webrtc_add_ice_candidate,
+            #[cfg(target_os = "linux")]
+            native_webrtc::webrtc_send,
+            #[cfg(target_os = "linux")]
+            native_webrtc::webrtc_close,
+            #[cfg(target_os = "linux")]
+            native_webrtc::webrtc_close_all,
             sync_crypto::sync_handshake_generate_keypair,
             sync_crypto::sync_handshake_start_initiator,
             sync_crypto::sync_handshake_start_responder,

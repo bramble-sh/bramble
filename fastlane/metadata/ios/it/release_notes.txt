@@ -1,14 +1,11 @@
-Novità in questa versione:
+Novità di questa versione:
 
-- Le chiavi di accesso salvate in Bramble ora funzionano sui siti che le usano per proteggere i dati (iOS 18 e versioni successive).
-- Importare da Proton Pass ora include chiavi di accesso, file e tutti i siti web, mentre l'importazione da 1Password include i file. L'anteprima dell'importazione conta gli allegati prima di iniziare.
-- Creare alias email con Fastmail Masked Email.
-- I siti web di un accesso sono ora elencati insieme sotto un'unica etichetta.
-- Gli accessi il cui sito web è stato salvato senza "https://", come nas.local:5000, ora si compilano automaticamente e trovano le chiavi di accesso corrispondenti.
-- L'importazione da Apple Passwords mantiene le date di ciascun elemento e la schermata di trasferimento ora indica Bramble.
-- La creazione di più chiavi di accesso consecutive non causa più la perdita di nessuna di esse e una chiave di accesso viene offerta solo sul proprio sito.
-- Il salvataggio non si blocca più quando la connessione ha problemi, ad esempio con una VPN in uno stato anomalo. Se un salvataggio dovesse richiedere troppo tempo, l'app lo segnala.
-- Un file che si stava allegando alla chiusura dell'app non rimane più nei backup.
-- Miglioramenti della sicurezza per la sincronizzazione.
+- La ricerca include anche le note e mostra prima le corrispondenze nei nomi.
+- Dopo il blocco dell'app, allo sblocco si torna alla schermata precedente, con la ricerca e la posizione nell'elenco.
+- L'elenco del vault ricorda l'ordinamento scelto.
+- Il registro di sincronizzazione mostra data e ora di ogni voce e il dispositivo a cui si riferisce. In Impostazioni > Sincronizzazione è disponibile il pulsante Sincronizzare ora.
+- L'app avvisa quando è disponibile una nuova versione.
+- La sincronizzazione inizia non appena si unisce il primo dispositivo invitato.
+- I dispositivi si connettono per la sincronizzazione in modo più affidabile.
 
-Nessun account, nessun cloud. Tutto resta sui propri dispositivi.
+Nessun account, nessun cloud. Tutto resta sui dispositivi dell'utente.

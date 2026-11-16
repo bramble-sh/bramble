@@ -30,12 +30,16 @@ interface EntryFormProps {
 	type: EntryType;
 	defaultUrl?: string;
 	initialEntry?: EntryData;
+	/** Creating, even though `initialEntry` seeds the form (a duplicate, a captured login). */
+	isNew?: boolean;
 	initialBreach?: BreachStatus;
 	// Restored pop-out snapshot; wins over initialEntry / defaultUrl when present.
 	draftValues?: EntryFormDraft;
 	registerDraft?: (getter: (() => EntryFormDraft) | null) => void;
 	submitLabel?: string;
 	onBack: () => void;
+	/** Where a successful save leaves to; onBack when absent. */
+	onSaved?: () => void;
 	onSave: (data: EntryData) => Promise<void>;
 }
 
@@ -44,11 +48,13 @@ export function EntryForm({
 	type,
 	defaultUrl = "",
 	initialEntry,
+	isNew = false,
 	initialBreach,
 	draftValues,
 	registerDraft,
 	submitLabel,
 	onBack,
+	onSaved = onBack,
 	onSave,
 }: EntryFormProps) {
 	const { t } = useLingui();
@@ -94,7 +100,7 @@ export function EntryForm({
 				customFields: formToCustomFields(values[CUSTOM_FIELDS_NAME]),
 				tags: formToTags(values[TAGS_NAME]),
 			});
-			onBack();
+			onSaved();
 		} catch (e) {
 			setSaveError((e as Error).message);
 		} finally {
@@ -107,7 +113,8 @@ export function EntryForm({
 	const Fields = mode.Fields;
 	// Label verbatim so acronyms keep their case (e.g. "SSH key").
 	const modeLabel = mode.label;
-	const heading = initialEntry ? <Trans>Edit {modeLabel}</Trans> : <Trans>New {modeLabel}</Trans>;
+	const heading =
+		initialEntry && !isNew ? <Trans>Edit {modeLabel}</Trans> : <Trans>New {modeLabel}</Trans>;
 	const label = submitLabel ?? t`Save ${modeLabel}`;
 
 	return (

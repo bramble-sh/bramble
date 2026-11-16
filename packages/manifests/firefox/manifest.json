@@ -1,7 +1,7 @@
 {
 	"manifest_version": 3,
 	"name": "Bramble",
-	"version": "1.33.0",
+	"version": "1.37.0",
 	"default_locale": "en",
 	"description": "__MSG_extDescription__",
 	"browser_specific_settings": {
@@ -30,7 +30,7 @@
 		"type": "module"
 	},
 	"permissions": ["storage", "unlimitedStorage", "alarms", "idle", "clipboardWrite", "identity"],
-	"optional_permissions": ["nativeMessaging"],
+	"optional_permissions": ["nativeMessaging", "privacy"],
 	"host_permissions": ["<all_urls>"],
 	"content_scripts": [
 		{
@@ -54,6 +54,10 @@
 		}
 	],
 	"commands": {
+		"fill-login": {
+			"suggested_key": { "default": "Ctrl+Shift+L", "mac": "Command+Shift+L" },
+			"description": "__MSG_cmdFillLogin__"
+		},
 		"lock-vault": {
 			"description": "__MSG_cmdLockVault__"
 		}
@@ -63,7 +67,7 @@
 	},
 	"web_accessible_resources": [
 		{
-			"resources": ["autofill-ui.html", "autofill-ui.js"],
+			"resources": ["autofill-ui.html", "autofill-ui.js", "corner-field.html", "corner-field.js"],
 			"matches": ["<all_urls>"]
 		}
 	]

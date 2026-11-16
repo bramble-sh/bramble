@@ -26,6 +26,23 @@ const h = vi.hoisted(() => ({
 	stateListener: null as ((locked: boolean) => void) | null,
 	// Swapped per test to drive what a "merge" does.
 	applyRemote: async (_port: unknown, _payload: unknown, _opts?: unknown): Promise<void> => {},
+	/** Links the app was asked to end, and whether it should refuse the next one. */
+	ended: [] as { linkKey: string; vaultId: string }[],
+	endFails: false,
+	/** What the Rust side answers to "is the vault locked?". */
+	locked: true,
+}));
+
+vi.mock("./link-peers", async (importOriginal) => ({
+	...(await importOriginal<typeof import("./link-peers")>()),
+	pinLink: () => {},
+	endLink: async (linkKey: string, vaultId: string) => {
+		if (h.endFails) {
+			h.endFails = false;
+			throw new Error("the app didn't answer");
+		}
+		h.ended.push({ linkKey, vaultId });
+	},
 }));
 
 vi.mock("@core/index", async (importOriginal) => {
@@ -105,6 +122,7 @@ vi.mock("../adapters/crypto", () => ({
 	desktopCrypto: {
 		encryptWithVek: async () => ({ iv: "AAAA", ciphertext: "BBBB" }),
 		decryptWithVek: async () => JSON.stringify({ entries: [], tombstones: [] }),
+		isLocked: async () => h.locked,
 	},
 }));
 
@@ -178,6 +196,9 @@ beforeEach(() => {
 	h.blobPokes = 0;
 	h.stateListener = null;
 	h.applyRemote = async () => {};
+	h.ended.length = 0;
+	h.endFails = false;
+	h.locked = true;
 	vi.stubGlobal("crypto", { randomUUID: () => "id", getRandomValues: (a: Uint8Array) => a });
 });
 
@@ -288,6 +309,18 @@ describe("retargetActiveVault", () => {
 	});
 });
 
+describe("the relay", () => {
+	it("uses the hosted one when the saved setting is blank", async () => {
+		h.meta.set(VAULT_REGISTRY_KEY, registry(VAULT_A));
+		h.meta.set("active-vault", VAULT_A);
+		enrol(VAULT_A);
+		h.meta.set("sync.relay", "");
+		await startSession(await loadRoster());
+
+		expect(h.starts[0]?.relayUrl).toBe("wss://bramble-relay.flythenimbus.workers.dev");
+	});
+});
+
 describe("transports", () => {
 	it("runs one session over the relay and one over the browser link", async () => {
 		// Two sessions rather than one: a phone is only reachable through the relay, and a browser
@@ -374,6 +407,249 @@ describe("lock state", () => {
 		h.rosterOpts = null;
 		h.stateListener?.(false);
 		await vi.waitFor(() => expect(h.rosterOpts).not.toBeNull());
+	});
+});
+
+// Issue #230: what an unlock does, without having to lock first.
+describe("sync now", () => {
+	async function running() {
+		h.meta.set(VAULT_REGISTRY_KEY, registry(VAULT_A));
+		h.meta.set("active-vault", VAULT_A);
+		enrol(VAULT_A);
+		const mod = await loadRoster();
+		await startSession(mod);
+		await vi.waitFor(() => expect(h.blobStarts).toHaveLength(1));
+		h.locked = false;
+		return mod;
+	}
+
+	it("drops every session and starts a fresh set", async () => {
+		const mod = await running();
+		await mod.restartRosterSync();
+
+		expect(h.sessionStops).toBe(2);
+		expect(h.blobStops).toBe(1);
+		expect(h.starts).toHaveLength(4);
+		expect(h.blobStarts).toHaveLength(2);
+	});
+
+	it("touches nothing while the vault is locked", async () => {
+		const mod = await running();
+		h.locked = true;
+
+		await expect(mod.restartRosterSync()).rejects.toThrow("the vault is locked");
+		expect(h.sessionStops).toBe(0);
+		expect(h.starts).toHaveLength(2);
+	});
+
+	it("restarts a start that is still under way, rather than leaving it be", async () => {
+		h.meta.set(VAULT_REGISTRY_KEY, registry(VAULT_A));
+		h.meta.set("active-vault", VAULT_A);
+		enrol(VAULT_A);
+		const mod = await loadRoster();
+		mod.initRosterSync();
+		h.locked = false;
+		h.stateListener?.(false);
+		await mod.restartRosterSync();
+
+		expect(h.sessionStops).toBe(2);
+		expect(h.starts).toHaveLength(4);
+		expect(h.blobStarts).toHaveLength(2);
+	});
+});
+
+describe("a window that opens onto an unlocked vault", () => {
+	// The VEK lives in the Rust process, which outlives the window. On Wayland closing the window
+	// destroys it and the tray builds a new one (lifetime.rs), so the new window finds the vault
+	// already unlocked and never sees an unlock event: sync stayed off until a lock and unlock (#228).
+	it("starts sync without waiting for an unlock", async () => {
+		h.meta.set(VAULT_REGISTRY_KEY, registry(VAULT_A));
+		h.meta.set("active-vault", VAULT_A);
+		enrol(VAULT_A);
+		h.locked = false;
+		const mod = await loadRoster();
+		mod.initRosterSync();
+
+		await vi.waitFor(() => expect(h.rosterOpts).not.toBeNull());
+	});
+
+	it("starts nothing while the vault is locked", async () => {
+		h.meta.set(VAULT_REGISTRY_KEY, registry(VAULT_A));
+		h.meta.set("active-vault", VAULT_A);
+		enrol(VAULT_A);
+		const mod = await loadRoster();
+		mod.initRosterSync();
+		await new Promise((r) => setTimeout(r, 0));
+
+		expect(h.rosterOpts).toBeNull();
+	});
+
+	it("starts one set of sessions when an unlock lands during that check", async () => {
+		h.meta.set(VAULT_REGISTRY_KEY, registry(VAULT_A));
+		h.meta.set("active-vault", VAULT_A);
+		enrol(VAULT_A);
+		h.locked = false;
+		const mod = await loadRoster();
+		mod.initRosterSync();
+		h.stateListener?.(false);
+		await vi.waitFor(() => expect(h.blobStarts.length).toBeGreaterThan(0));
+		await new Promise((r) => setTimeout(r, 50));
+
+		// One relay session and one link session, not two of each with the first pair orphaned.
+		expect(h.starts).toHaveLength(2);
+		expect(h.blobStarts).toHaveLength(1);
+	});
+});
+
+describe("a browser removed from the roster", () => {
+	const wall = Date.now() - 1000;
+	const member = (id: string, publicKey: string) => ({
+		id,
+		publicKey,
+		label: id,
+		addedAt: 1,
+		hlc: { wall, counter: 0, node: id },
+	});
+	const laptop = member("laptop", "P");
+	const browser = member("browser", "browserpub");
+	const tombstone = (id: string) => ({ id, hlc: { wall: wall + 1, counter: 0, node: "laptop" } });
+	const setRoster = (vaultId: string, roster: unknown) =>
+		h.meta.set(`sync.group:${vaultId}`, { groupKey: "k", roster });
+
+	/** A session for `vaultId`, with its browser having passed sync's check over the link. */
+	async function linked(vaultId = VAULT_A) {
+		h.meta.set(VAULT_REGISTRY_KEY, registry(VAULT_A, VAULT_B));
+		h.meta.set("active-vault", vaultId);
+		setRoster(vaultId, { devices: [laptop, browser], revoked: [] });
+		const mod = await loadRoster();
+		await startSession(mod);
+		const linkSession = h.starts[1] as unknown as {
+			onAuthenticated: (pub: string, linkKey: string) => void;
+		};
+		linkSession.onAuthenticated("browserpub", "linkkey");
+		await vi.waitFor(() => expect(h.meta.get(`link.keys:${vaultId}`)).toBeDefined());
+		return mod;
+	}
+
+	it("loses its link when another device's removal arrives", async () => {
+		await linked();
+		const session = h.starts[0] as unknown as { pushRemoteRoster: (json: string) => Promise<void> };
+		await session.pushRemoteRoster(
+			JSON.stringify({ devices: [], revoked: [tombstone("browser")] }),
+		);
+		expect(h.ended).toEqual([{ linkKey: "linkkey", vaultId: VAULT_A }]);
+	});
+
+	it("loses its link when it is removed here", async () => {
+		const mod = await linked();
+		setRoster(VAULT_A, { devices: [laptop, browser], revoked: [tombstone("browser")] });
+		await mod.endRemovedLinks(VAULT_A);
+		expect(h.ended).toEqual([{ linkKey: "linkkey", vaultId: VAULT_A }]);
+	});
+
+	it("ends it once, even when asked again", async () => {
+		const mod = await linked();
+		setRoster(VAULT_A, { devices: [laptop], revoked: [tombstone("browser")] });
+		await mod.endRemovedLinks(VAULT_A);
+		await mod.endRemovedLinks(VAULT_A);
+		expect(h.ended).toHaveLength(1);
+	});
+
+	it("loses it at the next start, if the app was closed when the removal landed", async () => {
+		await linked();
+		setRoster(VAULT_A, { devices: [laptop], revoked: [tombstone("browser")] });
+		h.rosterOpts = null;
+		h.starts.length = 0;
+		await startSession(await loadRoster());
+		await vi.waitFor(() => expect(h.ended).toHaveLength(1));
+	});
+
+	it("is tried again next time if the app couldn't end it", async () => {
+		const mod = await linked();
+		setRoster(VAULT_A, { devices: [laptop], revoked: [tombstone("browser")] });
+		h.endFails = true;
+		await mod.endRemovedLinks(VAULT_A);
+		expect(h.ended).toEqual([]);
+		await mod.endRemovedLinks(VAULT_A);
+		expect(h.ended).toEqual([{ linkKey: "linkkey", vaultId: VAULT_A }]);
+	});
+
+	it("keeps its link while it is still in the roster", async () => {
+		const mod = await linked();
+		await mod.endRemovedLinks(VAULT_A);
+		expect(h.ended).toEqual([]);
+	});
+
+	it("keeps it when re-added under a new id with the same key", async () => {
+		const mod = await linked();
+		setRoster(VAULT_A, {
+			devices: [laptop, member("browser-2", "browserpub")],
+			revoked: [tombstone("browser")],
+		});
+		await mod.endRemovedLinks(VAULT_A);
+		expect(h.ended).toEqual([]);
+	});
+
+	it("keeps it when this device left the group and started a new one", async () => {
+		// Missing from the roster isn't removal: only a tombstone says someone removed it.
+		const mod = await linked();
+		setRoster(VAULT_A, { devices: [laptop], revoked: [] });
+		await mod.endRemovedLinks(VAULT_A);
+		expect(h.ended).toEqual([]);
+	});
+
+	it("leaves another vault's list alone", async () => {
+		const mod = await linked(VAULT_A);
+		setRoster(VAULT_B, { devices: [laptop], revoked: [tombstone("browser")] });
+		await mod.endRemovedLinks(VAULT_B);
+		expect(h.ended).toEqual([]);
+	});
+
+	it("is one of the open vault's sync devices while it is in the roster", async () => {
+		const mod = await linked();
+		expect(await mod.syncingLinkKeys()).toEqual(["linkkey"]);
+	});
+
+	it("isn't once the roster removes it", async () => {
+		const mod = await linked();
+		setRoster(VAULT_A, { devices: [laptop], revoked: [tombstone("browser")] });
+		expect(await mod.syncingLinkKeys()).toEqual([]);
+	});
+
+	it("isn't the sync device of another vault that is open now", async () => {
+		const mod = await linked(VAULT_A);
+		h.meta.set("active-vault", VAULT_B);
+		setRoster(VAULT_B, { devices: [laptop, browser], revoked: [] });
+		expect(await mod.syncingLinkKeys()).toEqual([]);
+	});
+
+	it("tells Settings when it is first seen syncing over its link", async () => {
+		h.meta.set(VAULT_REGISTRY_KEY, registry(VAULT_A, VAULT_B));
+		h.meta.set("active-vault", VAULT_A);
+		setRoster(VAULT_A, { devices: [laptop, browser], revoked: [] });
+		const mod = await loadRoster();
+		const kinds: string[] = [];
+		(await import("./bus")).onSyncEvent((e) => kinds.push(e.kind));
+		await startSession(mod);
+		const linkSession = h.starts[1] as unknown as {
+			onAuthenticated: (pub: string, linkKey: string) => void;
+		};
+		linkSession.onAuthenticated("browserpub", "linkkey");
+		await vi.waitFor(() => expect(kinds).toContain("roster"));
+		const seen = kinds.filter((k) => k === "roster").length;
+		linkSession.onAuthenticated("browserpub", "linkkey");
+		await new Promise((r) => setTimeout(r, 20));
+		expect(kinds.filter((k) => k === "roster")).toHaveLength(seen);
+	});
+
+	it("does nothing for a removed device that never synced over the link", async () => {
+		const mod = await linked();
+		setRoster(VAULT_A, {
+			devices: [laptop, browser, member("phone", "phonepub")],
+			revoked: [tombstone("phone")],
+		});
+		await mod.endRemovedLinks(VAULT_A);
+		expect(h.ended).toEqual([]);
 	});
 });
 

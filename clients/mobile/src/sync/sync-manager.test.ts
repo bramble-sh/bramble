@@ -12,6 +12,7 @@ const h = vi.hoisted(() => ({
 	meta: new Map<string, unknown>(),
 	blobWrites: [] as { vaultId: string | undefined }[],
 	rosterOpts: null as Record<string, (...a: never[]) => unknown> | null,
+	rosterStarts: 0,
 	sessionStops: 0,
 	/** The file session's options, and what was done to it. */
 	blobStarts: [] as Record<string, unknown>[],
@@ -20,6 +21,22 @@ const h = vi.hoisted(() => ({
 	stateListener: null as ((locked: boolean) => void) | null,
 	// Swapped per test to drive what a "merge" does.
 	applyRemote: async (_port: unknown, _payload: unknown, _opts?: unknown): Promise<void> => {},
+	/** The enroll host's options, from the last invite. */
+	enrollOpts: null as Record<string, (...a: never[]) => unknown> | null,
+	/** What the native side answers to "is the vault locked?". */
+	locked: false,
+	/** The native crypto bridge, as far as an invite and an admission use it. */
+	syncCrypto: {
+		export_vek: async () => "vek",
+		roster_admission_sign: async () => "admission-sig",
+	},
+}));
+
+vi.mock("@core/sync/transport/enroll-host", () => ({
+	startEnroll: async (_role: string, opts: Record<string, (...a: never[]) => unknown>) => {
+		h.enrollOpts = opts;
+		return { stop() {} };
+	},
 }));
 
 vi.mock("@capacitor/core", () => ({ Capacitor: { isNativePlatform: () => true } }));
@@ -53,6 +70,7 @@ vi.mock("@core/vault-format", async (importOriginal) => ({
 vi.mock("@core/sync/transport/roster-sync", () => ({
 	startRosterSync: async (opts: Record<string, (...a: never[]) => unknown>) => {
 		h.rosterOpts = opts;
+		h.rosterStarts++;
 		return {
 			stop: () => {
 				h.sessionStops++;
@@ -101,6 +119,7 @@ vi.mock("../adapters/crypto", () => ({
 	mobileCrypto: {
 		encryptWithVek: async () => ({ iv: "AAAA", ciphertext: "BBBB" }),
 		decryptWithVek: async () => JSON.stringify({ entries: [], tombstones: [] }),
+		isLocked: async () => h.locked,
 	},
 }));
 
@@ -112,7 +131,7 @@ vi.mock("../adapters/vault-session", () => ({
 	},
 }));
 
-vi.mock("../native-crypto", () => ({ nativeSyncCrypto: () => ({}) }));
+vi.mock("../native-crypto", () => ({ nativeSyncCrypto: h.syncCrypto }));
 // Both the Noise and the roster-signing keypair come from here; returning a stored pair keeps
 // startRoster off the wasm generation path, which isn't what these tests are about.
 vi.mock("../secure-storage", () => ({
@@ -170,12 +189,15 @@ beforeEach(() => {
 	h.meta.clear();
 	h.blobWrites.length = 0;
 	h.rosterOpts = null;
+	h.rosterStarts = 0;
 	h.sessionStops = 0;
 	h.blobStarts.length = 0;
 	h.blobStops = 0;
 	h.blobPokes = 0;
 	h.stateListener = null;
 	h.applyRemote = async () => {};
+	h.enrollOpts = null;
+	h.locked = false;
 	vi.stubGlobal("crypto", { randomUUID: () => "id", getRandomValues: (a: Uint8Array) => a });
 });
 
@@ -237,6 +259,18 @@ describe("session vault binding", () => {
 		// An id-less write falls back to registry[0] in the storage adapter, which is the other
 		// half of the bug; the pinned store must always pass one explicitly.
 		expect(h.blobWrites.every((w) => w.vaultId !== undefined)).toBe(true);
+	});
+});
+
+describe("the relay", () => {
+	it("uses the hosted one when the saved setting is blank", async () => {
+		h.meta.set(VAULT_REGISTRY_KEY, registry(VAULT_A));
+		h.meta.set("active-vault", VAULT_A);
+		enrol(VAULT_A);
+		h.meta.set("sync.relay", "");
+		await startSession(await loadManager());
+
+		expect(h.rosterOpts?.relayUrl).toBe("wss://bramble-relay.flythenimbus.workers.dev");
 	});
 });
 
@@ -335,5 +369,123 @@ describe("activeVaultId resolution", () => {
 		await startSession(mod);
 
 		expect(h.rosterOpts).not.toBeNull();
+	});
+});
+
+// Issue #230: what an unlock does, without having to lock first.
+describe("sync now", () => {
+	async function running() {
+		h.meta.set(VAULT_REGISTRY_KEY, registry(VAULT_A));
+		h.meta.set("active-vault", VAULT_A);
+		enrol(VAULT_A);
+		const mod = await loadManager();
+		await startSession(mod);
+		await vi.waitFor(() => expect(h.blobStarts).toHaveLength(1));
+		return mod;
+	}
+
+	it("drops every session and starts a fresh set", async () => {
+		const mod = await running();
+		await mod.restartSync();
+
+		expect(h.sessionStops).toBe(1);
+		expect(h.blobStops).toBe(1);
+		expect(h.rosterStarts).toBe(2);
+		expect(h.blobStarts).toHaveLength(2);
+	});
+
+	it("touches nothing while the vault is locked", async () => {
+		const mod = await running();
+		h.locked = true;
+
+		await expect(mod.restartSync()).rejects.toThrow("the vault is locked");
+		expect(h.sessionStops).toBe(0);
+		expect(h.rosterStarts).toBe(1);
+	});
+
+	it("restarts a start that is still under way, rather than leaving it be", async () => {
+		h.meta.set(VAULT_REGISTRY_KEY, registry(VAULT_A));
+		h.meta.set("active-vault", VAULT_A);
+		enrol(VAULT_A);
+		const mod = await loadManager();
+		mod.initRosterSync();
+		h.stateListener?.(false);
+		await mod.restartSync();
+		await new Promise((r) => setTimeout(r, 50));
+
+		// One session replaced by one more, not two running with the first orphaned.
+		expect(h.rosterStarts).toBe(2);
+		expect(h.sessionStops).toBe(1);
+		expect(h.blobStarts).toHaveLength(2);
+		expect(h.blobStops).toBe(1);
+	});
+});
+
+// Issue #230: the Settings panel usually opens long after sync started, so a replayed line must
+// keep the time it was logged, not the replay's.
+describe("sync status", () => {
+	it("hands over each line with the time it was logged, also to a late subscriber", async () => {
+		const mod = await loadManager();
+		vi.useFakeTimers({ toFake: ["Date"], now: 1_000 });
+		try {
+			await mod.stopSync();
+			vi.setSystemTime(5_000);
+			const seen: [string, number][] = [];
+			mod.onSyncStatus((status, at) => seen.push([status, at]));
+
+			expect(seen).toEqual([["disconnected", 1_000]]);
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+});
+
+describe("the first device to join", () => {
+	const hlc = (node: string) => ({ wall: 1000, counter: 0, node });
+	const INVITER = {
+		id: "inviter-id",
+		publicKey: "P",
+		label: "Inviter",
+		addedAt: 0,
+		hlc: hlc("inviter-id"),
+	};
+	const JOINER = {
+		id: "joiner-id",
+		publicKey: "joinerPub",
+		label: "Joiner",
+		addedAt: 0,
+		hlc: hlc("joiner-id"),
+	};
+
+	it("is rostered and syncing at once, not after the next unlock", async () => {
+		// Sync starts on unlock, and only for a vault already in a group. A first pairing makes the
+		// group, so without this a phone that invited its first device synced nothing until it was
+		// locked and unlocked again (the desktop's version of this was e74e6e6e).
+		h.meta.set(VAULT_REGISTRY_KEY, registry(VAULT_A));
+		h.meta.set("active-vault", VAULT_A);
+		h.meta.set(`sync.group:${VAULT_A}`, {
+			groupKey: "k",
+			roster: { devices: [INVITER], revoked: [] },
+		});
+		const mod = await loadManager();
+		mod.initRosterSync();
+		await mod.startEnrollInvite({
+			relayUrl: "ws://localhost:7400",
+			groupKeyB64: "k",
+			psk: "psk",
+			roster: { devices: [INVITER], revoked: [] },
+			entries: { entries: [], tombstones: [] },
+			admission: { password: "pw", saltB64: "salt", adminId: "inviter-id" },
+		});
+		expect(h.rosterOpts).toBeNull();
+
+		h.enrollOpts?.onEnrolled?.(JSON.stringify(JOINER) as never);
+
+		await vi.waitFor(() => expect(h.rosterOpts).not.toBeNull());
+		const group = h.meta.get(`sync.group:${VAULT_A}`) as {
+			roster: { devices: { id: string; admission?: { by: string; sig: string } }[] };
+		};
+		const joiner = group.roster.devices.find((d) => d.id === "joiner-id");
+		expect(joiner?.admission).toEqual({ by: "inviter-id", sig: "admission-sig" });
 	});
 });

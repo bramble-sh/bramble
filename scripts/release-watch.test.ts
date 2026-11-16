@@ -36,6 +36,10 @@ describe("approvalPrompt", () => {
 		assert.equal(approvalPrompt([job(SIGN_JOB, "completed", "success")], REQUESTS), null);
 	});
 
+	it("says nothing for the Azure job, which needs no approval", () => {
+		assert.equal(approvalPrompt([job("Sign with Azure", "in_progress")], REQUESTS), null);
+	});
+
 	it("still prompts without the page, pointing at SignPath's email", () => {
 		assert.match(approvalPrompt([job(SIGN_JOB, "in_progress")]) ?? "", /emails you the link/);
 	});

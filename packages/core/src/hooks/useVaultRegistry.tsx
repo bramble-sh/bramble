@@ -13,6 +13,8 @@ import { syncKeyFor } from "../sync/sync-keys";
 import {
 	addVault,
 	EMPTY_REGISTRY,
+	hideVault,
+	listedVaults,
 	parseRegistry,
 	removeVault,
 	renameVault,
@@ -24,7 +26,10 @@ import {
 export interface VaultRegistryValue {
 	/** True once the registry has been read from storage. */
 	ready: boolean;
+	/** The vaults to show: not one a combine took off the list. */
 	vaults: VaultRecord[];
+	/** The first registered vault, hidden or not, as the background reckons it. */
+	defaultVaultId: string | undefined;
 	/** The vault the app currently operates on, or undefined before it resolves (callers that omit an
 	 * id then fall back to the first/only vault). */
 	activeId: string | undefined;
@@ -52,6 +57,12 @@ export interface VaultRegistryValue {
 	dropActiveRecord: () => Promise<void>;
 	/** Re-read the registry from storage (after a create/rename/delete elsewhere). */
 	refresh: () => Promise<void>;
+	/** Take a vault off the lists (local to this device). Reads storage fresh, since a join has
+	 * usually just added a record this render has not seen. */
+	hide: (id: string, copy: { blobHash: string; into: string }) => Promise<void>;
+	/** Forget the record of a vault deleteEmptyVault has erased. Never the active one: that is
+	 * dropActiveRecord's, behind a re-auth. */
+	forgetEmptyRecord: (id: string) => Promise<void>;
 }
 
 // Value when no provider is mounted (e.g. isolated hook tests): the registry is "ready"
@@ -60,6 +71,7 @@ export interface VaultRegistryValue {
 const DEFAULT: VaultRegistryValue = {
 	ready: true,
 	vaults: [],
+	defaultVaultId: undefined,
 	activeId: undefined,
 	syncKey: (k) => k,
 	selectVault: () => {},
@@ -68,13 +80,17 @@ const DEFAULT: VaultRegistryValue = {
 	rename: async () => {},
 	dropActiveRecord: async () => {},
 	refresh: async () => {},
+	hide: async () => {},
+	forgetEmptyRecord: async () => {},
 };
 
 const VaultRegistryContext = createContext<VaultRegistryValue>(DEFAULT);
 
 /** The vault to select with no choice made: the only one, since the router skips the picker for it. */
-const soleVaultId = (reg: VaultRegistry) =>
-	reg.vaults.length === 1 ? reg.vaults[0]?.id : undefined;
+const soleVaultId = (reg: VaultRegistry) => {
+	const listed = listedVaults(reg);
+	return listed.length === 1 ? listed[0]?.id : undefined;
+};
 
 export function useVaultRegistry(): VaultRegistryValue {
 	return useContext(VaultRegistryContext);
@@ -117,10 +133,10 @@ export function VaultRegistryProvider({
 	// selected). Every vault's sync value lives at `<key>:<id>`.
 	const syncKey = useCallback(
 		(flatKey: string) => {
-			const v = activeId ?? registry.vaults[0]?.id;
+			const v = activeId ?? listedVaults(registry)[0]?.id;
 			return v ? syncKeyFor(flatKey, v) : flatKey;
 		},
-		[activeId, registry.vaults],
+		[activeId, registry],
 	);
 
 	// Write a new registry to storage and reflect it in state.
@@ -135,34 +151,59 @@ export function VaultRegistryProvider({
 	const createRecord = useCallback(
 		async (label = "") => {
 			const id = crypto.randomUUID();
-			await persist(addVault(registry, { id, label, createdAt: Date.now() }));
+			// Fresh: another window's delete or add since this render would otherwise be undone, or
+			// its number handed out twice.
+			const current = parseRegistry(await storage.getMeta(VAULT_REGISTRY_KEY));
+			await persist(addVault(current, { id, label, createdAt: Date.now() }));
 			setActiveId(id);
 			return id;
 		},
-		[registry, persist],
+		[storage, persist],
 	);
 	// rename/remove only ever act on the active vault (no target id), so a vault can never
 	// rename or delete another vault.
 	const rename = useCallback(
 		async (label: string) => {
-			if (activeId) await persist(renameVault(registry, activeId, label));
+			if (!activeId) return;
+			// Fresh: this runs from a reload after another window's rename, and this render's registry
+			// may lack a vault added elsewhere.
+			const current = parseRegistry(await storage.getMeta(VAULT_REGISTRY_KEY));
+			await persist(renameVault(current, activeId, label));
 		},
-		[registry, persist, activeId],
+		[storage, persist, activeId],
 	);
 	// State only: forget the active vault's record and deselect it (selecting the only vault left,
 	// as on launch). The blob is erased by
 	// useVault.deleteVault() (after re-auth), which then calls this. Not a standalone delete.
 	const dropActiveRecord = useCallback(async () => {
 		if (!activeId) return;
-		const next = removeVault(registry, activeId);
+		const next = removeVault(parseRegistry(await storage.getMeta(VAULT_REGISTRY_KEY)), activeId);
 		await persist(next);
 		setActiveId(soleVaultId(next));
-	}, [registry, persist, activeId]);
+	}, [storage, persist, activeId]);
+
+	const hide = useCallback(
+		async (id: string, copy: { blobHash: string; into: string }) => {
+			const current = parseRegistry(await storage.getMeta(VAULT_REGISTRY_KEY));
+			await persist(hideVault(current, id, { at: Date.now(), ...copy }));
+		},
+		[storage, persist],
+	);
+
+	const forgetEmptyRecord = useCallback(
+		async (id: string) => {
+			if (id === activeId) return;
+			const current = parseRegistry(await storage.getMeta(VAULT_REGISTRY_KEY));
+			await persist(removeVault(current, id));
+		},
+		[activeId, storage, persist],
+	);
 
 	const value = useMemo<VaultRegistryValue>(
 		() => ({
 			ready,
-			vaults: registry.vaults,
+			vaults: listedVaults(registry),
+			defaultVaultId: registry.vaults[0]?.id,
 			activeId,
 			syncKey,
 			selectVault,
@@ -171,6 +212,8 @@ export function VaultRegistryProvider({
 			rename,
 			dropActiveRecord,
 			refresh,
+			hide,
+			forgetEmptyRecord,
 		}),
 		[
 			ready,
@@ -183,6 +226,8 @@ export function VaultRegistryProvider({
 			rename,
 			dropActiveRecord,
 			refresh,
+			hide,
+			forgetEmptyRecord,
 		],
 	);
 

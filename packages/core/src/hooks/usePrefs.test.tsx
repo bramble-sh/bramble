@@ -134,6 +134,40 @@ describe("usePrefs shared provider", () => {
 	});
 });
 
+// The list's address carries the order only while the app is open; this is what a fresh open
+// and the "go to vault" button fall back to.
+describe("the vault list's sort order", () => {
+	function Sort() {
+		const { prefs, loaded } = usePrefs();
+		return <div>{loaded ? `sort:${prefs.vaultSort}` : "loading"}</div>;
+	}
+	const show = (platform: Platform) =>
+		render(
+			<PlatformProvider platform={platform}>
+				<PrefsProvider>
+					<Sort />
+				</PrefsProvider>
+			</PlatformProvider>,
+		);
+
+	it("is remembered on this device", async () => {
+		const { platform, store } = makePlatform();
+		store.set("pref.vaultSort", "recent-used");
+		show(platform);
+		expect(await screen.findByText("sort:recent-used")).toBeTruthy();
+	});
+
+	it("starts A to Z, and stays there for an order it doesn't know", async () => {
+		const { platform, store } = makePlatform();
+		show(platform);
+		expect(await screen.findByText("sort:name-asc")).toBeTruthy();
+		cleanup();
+		store.set("pref.vaultSort", "by-colour");
+		show(platform);
+		expect(await screen.findByText("sort:name-asc")).toBeTruthy();
+	});
+});
+
 describe("per-vault prefs", () => {
 	function mount(platform: Platform) {
 		function Reader() {

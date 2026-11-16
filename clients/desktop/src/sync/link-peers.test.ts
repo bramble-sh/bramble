@@ -7,18 +7,30 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const h = vi.hoisted(() => ({
 	/** Tauri event listeners, by event name. */
-	listeners: new Map<string, (e: { payload: unknown }) => void>(),
+	listeners: new Map<string, ((e: { payload: unknown }) => void)[]>(),
 	unlistened: 0,
 	/** Browsers the Rust side reports as connected. */
 	connected: [] as { peerId: string; link: number }[],
 	/** Frames handed to the Rust side for delivery, and whether that delivery fails. */
-	sent: [] as { peerId: string; frame: string }[],
+	sent: [] as { peerId: string; frame: string; room?: string }[],
 	sendFails: false,
+	/** Link keys the Rust side was asked to pin, with the vault each was pinned to. */
+	pinned: [] as { publicKey: string; vaultId: string }[],
+	/** Link keys the Rust side was asked to forget from a vault's list. */
+	forgotten: [] as { publicKey: string; vaultId: string }[],
 }));
 
 vi.mock("@tauri-apps/api/core", () => ({
 	invoke: async (cmd: string, args?: Record<string, unknown>) => {
 		if (cmd === "link_sync_peers") return h.connected;
+		if (cmd === "pairing_pin_link") {
+			h.pinned.push(args as { publicKey: string; vaultId: string });
+			return true;
+		}
+		if (cmd === "pairing_forget_in_vault") {
+			h.forgotten.push(args as { publicKey: string; vaultId: string });
+			return true;
+		}
 		if (cmd === "link_sync_send") {
 			if (h.sendFails) throw new Error("no such peer");
 			h.sent.push(args as unknown as { peerId: string; frame: string });
@@ -30,7 +42,7 @@ vi.mock("@tauri-apps/api/core", () => ({
 
 vi.mock("@tauri-apps/api/event", () => ({
 	listen: async (name: string, cb: (e: { payload: unknown }) => void) => {
-		h.listeners.set(name, cb);
+		h.listeners.set(name, [...(h.listeners.get(name) ?? []), cb]);
 		return () => {
 			h.unlistened++;
 		};
@@ -38,9 +50,9 @@ vi.mock("@tauri-apps/api/event", () => ({
 }));
 
 const fire = (name: string, payload: unknown) => {
-	const cb = h.listeners.get(name);
-	if (!cb) throw new Error(`nothing listening for ${name}`);
-	cb({ payload });
+	const cbs = h.listeners.get(name);
+	if (!cbs?.length) throw new Error(`nothing listening for ${name}`);
+	for (const cb of cbs) cb({ payload });
 };
 
 async function start() {
@@ -60,6 +72,7 @@ beforeEach(() => {
 	h.connected = [];
 	h.sent.length = 0;
 	h.sendFails = false;
+	h.pinned.length = 0;
 	vi.useRealTimers();
 });
 
@@ -190,6 +203,66 @@ describe("closing a peer", () => {
 	});
 });
 
+describe("a browser whose sync starts after its link", () => {
+	// The offer made at connect went unheard: the link came up to link the browser, before it had
+	// a vault to sync. A browser that cannot open a second pipe yet asks for the offer again.
+	it("is offered again on the same connection when it asks", async () => {
+		h.connected = [{ peerId: "browser-a", link: 1 }];
+		const { peers } = await start();
+
+		fire("link-sync-restart", { peerId: "browser-a", link: 1 });
+
+		expect(peers).toHaveLength(2);
+		const next = peers[1]?.channel.recv();
+		fire("link-sync-frame", { peerId: "browser-a", link: 1, frame: "to-the-new-offer" });
+		expect(await next).toBe("to-the-new-offer");
+	});
+
+	it("is not taken down when the unheard offer gives up", async () => {
+		// Same connection, so the old offer's link number is the new one's too. Its roster-auth
+		// times out and closes it, which must not decline the offer that replaced it.
+		h.connected = [{ peerId: "browser-a", link: 1 }];
+		const { peers } = await start();
+		fire("link-sync-restart", { peerId: "browser-a", link: 1 });
+
+		peers[0]?.close();
+
+		const next = peers[1]?.channel.recv();
+		fire("link-sync-frame", { peerId: "browser-a", link: 1, frame: "still-served" });
+		expect(await next).toBe("still-served");
+		expect(peers).toHaveLength(2);
+	});
+
+	it("is not offered for enrollment by a restart, which only sync asks for", async () => {
+		const { linkPeerSourceFor } = await import("./link-peers");
+		const peers: PeerSession[] = [];
+		await linkPeerSourceFor("enroll")({ onPeer: (p) => peers.push(p), report: () => {} });
+
+		fire("link-sync-restart", { peerId: "browser-a", link: 1 });
+
+		expect(peers).toEqual([]);
+	});
+});
+
+describe("a browser that passed sync's check over the link", () => {
+	it("has its link pinned to the vault that sync was for, whichever is open by then", async () => {
+		// An old app-wide link may be taken by several vaults; this is the one it syncs with.
+		const { pinLink } = await import("./link-peers");
+		pinLink("browser-a", "vault-a");
+		await vi.waitFor(() =>
+			expect(h.pinned).toEqual([{ publicKey: "browser-a", vaultId: "vault-a" }]),
+		);
+	});
+});
+
+describe("ending a link", () => {
+	it("forgets the browser from the vault named, whichever is open", async () => {
+		const { endLink } = await import("./link-peers");
+		await endLink("browser-a", "vault-a");
+		expect(h.forgotten).toEqual([{ publicKey: "browser-a", vaultId: "vault-a" }]);
+	});
+});
+
 describe("teardown", () => {
 	it("unsubscribes every listener and offers nothing more", async () => {
 		h.connected = [{ peerId: "browser-a", link: 1 }];
@@ -198,7 +271,67 @@ describe("teardown", () => {
 		source.stop();
 		fire("link-peer-connected", { peerId: "browser-b", link: 1 });
 
-		expect(h.unlistened).toBe(3);
+		expect(h.unlistened).toBe([...h.listeners.values()].flat().length);
 		expect(peers).toHaveLength(1);
+	});
+});
+
+describe("rooms on the link", () => {
+	const nothingWithin = <T>(p: Promise<T>, ms = 50) =>
+		Promise.race([p.then(() => "got"), new Promise((r) => setTimeout(() => r("nothing"), ms))]);
+
+	async function both() {
+		vi.resetModules();
+		const { linkPeerSourceFor } = await import("./link-peers");
+		const sync: PeerSession[] = [];
+		const enroll: PeerSession[] = [];
+		await linkPeerSourceFor("sync")({ onPeer: (p) => sync.push(p), report: () => {} });
+		await linkPeerSourceFor("enroll", "p1")({ onPeer: (p) => enroll.push(p), report: () => {} });
+		return { sync, enroll };
+	}
+
+	it("keeps enrollment frames apart from sync frames", async () => {
+		h.connected = [{ peerId: "p1", link: 1 }];
+		const { sync, enroll } = await both();
+		fire("link-sync-frame", { peerId: "p1", link: 1, frame: "e", room: "enroll" });
+		expect(await enroll[0]!.channel.recv()).toBe("e");
+		expect(await nothingWithin(sync[0]!.channel.recv())).toBe("nothing");
+	});
+
+	it("treats a frame with no room as sync, as older browsers send", async () => {
+		h.connected = [{ peerId: "p1", link: 1 }];
+		const { sync, enroll } = await both();
+		fire("link-sync-frame", { peerId: "p1", link: 1, frame: "s" });
+		expect(await sync[0]!.channel.recv()).toBe("s");
+		expect(enroll).toEqual([]);
+	});
+
+	it("offers a browser for enrollment only once it speaks, because it opens the handshake", async () => {
+		// The joining browser is the Noise initiator. Offering it on connect started this end's
+		// handshake clock while the user was still typing a password, and a slow typist's first
+		// message then landed in the cool-down after the timeout.
+		h.connected = [{ peerId: "p1", link: 1 }];
+		const { enroll } = await both();
+		fire("link-peer-connected", { peerId: "p1", link: 1 });
+		expect(enroll).toEqual([]);
+
+		fire("link-sync-frame", { peerId: "p1", link: 1, frame: "m1", room: "enroll" });
+		expect(enroll.map((p) => p.remotePubkey)).toEqual(["p1"]);
+		expect(await enroll[0]!.channel.recv()).toBe("m1");
+	});
+
+	it("offers only the named browser for enrollment, and tags what it sends", async () => {
+		h.connected = [
+			{ peerId: "p1", link: 1 },
+			{ peerId: "p2", link: 2 },
+		];
+		const { enroll } = await both();
+		fire("link-sync-frame", { peerId: "p2", link: 2, frame: "x", room: "enroll" });
+		fire("link-sync-frame", { peerId: "p1", link: 1, frame: "m1", room: "enroll" });
+		expect(enroll.map((p) => p.remotePubkey)).toEqual(["p1"]);
+		enroll[0]!.channel.send("out");
+		await vi.waitFor(() =>
+			expect(h.sent).toContainEqual({ peerId: "p1", frame: "out", room: "enroll" }),
+		);
 	});
 });

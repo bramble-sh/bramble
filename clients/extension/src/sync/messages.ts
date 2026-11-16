@@ -73,6 +73,8 @@ export const EnrollJoinMsgSchema = z.object({
 	inviterPub: z.string(),
 	ownEntry: RosterEntrySchema,
 	password: z.string().optional(),
+	/** The invite came from the desktop app over the link: join over the link's enroll room. */
+	viaLink: z.boolean().optional(),
 });
 
 /** offscreen -> background: a peer's entries payload (JSON) to merge locally. */
@@ -146,6 +148,7 @@ export const SyncEventMsgSchema = z.object({
 });
 export type SyncEventMsg = z.infer<typeof SyncEventMsgSchema>;
 
-/** offscreen -> popup broadcast: a human-readable status line for the dev panel. */
-export const SyncStatusMsgSchema = z.object({ status: z.string() });
+/** offscreen -> popup broadcast: a human-readable status line for the dev panel, and the epoch ms
+ * it was logged at. */
+export const SyncStatusMsgSchema = z.object({ status: z.string(), at: z.number().optional() });
 export type SyncStatusMsg = z.infer<typeof SyncStatusMsgSchema>;

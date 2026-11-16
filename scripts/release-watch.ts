@@ -1,6 +1,7 @@
-// Follows a desktop release AND the sign-windows.yml run it starts, a line per change, and says when
-// to go and approve in SignPath. `gh run watch` sees only the first run, so it would sit silent
-// through the one step that waits on you outside GitHub. See docs/release-signing.md.
+// Follows a desktop release AND the sign-windows.yml run it starts, a line per change, and, when
+// SignPath is the signer, says when to go and approve there. `gh run watch` sees only the first
+// run, so it would sit silent through the one step that waits on you outside GitHub. Azure needs
+// no approval and its job never matches SIGN_JOB. See docs/release-signing.md.
 
 export interface Job {
 	name: string;
@@ -10,7 +11,7 @@ export interface Job {
 }
 
 const SIGN_WORKFLOW = "sign-windows.yml";
-/** The job in sign-windows.yml that submits and waits. Must match the workflow. */
+/** The SignPath job in sign-windows.yml, which submits and waits. Must match the workflow. */
 export const SIGN_JOB = "Sign with SignPath";
 
 function describe(job: Job): string {

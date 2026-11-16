@@ -1,0 +1,66 @@
+name: CLA
+
+# Every committer on a pull request has to agree, once, that their contribution is licensed under
+# the GPLv3 plus the app store permission; CLA.md says what and why. The action asks on the pull
+# request, records a signing comment as an entry in a JSON file on the cla-signatures branch (main
+# is protected, so the token cannot commit to it), and keeps this check red until everyone on the
+# pull request has signed. To make everyone sign again after a material change to CLA.md, bump the
+# version in path-to-signatures and first commit {"signedContributors": []} at the new path on
+# cla-signatures: the action never creates the file (it compares a 404 status to a string).
+#
+# pull_request_target runs in this repository with a write token, so nothing from the pull request
+# may ever be checked out or run here. The only step is the action, pinned by commit
+# (docs/ci-releases.md). It is our fork of ribtoks/cla-github-action v2.6.2 with only the runtime
+# moved to node24; take upstream fixes into the fork by hand.
+on:
+  issue_comment:
+    types: [created]
+  pull_request_target:
+    types: [opened, closed, reopened, synchronize]
+
+permissions: {}
+
+# A signing comment and a push can arrive together; queue them so both reach the signatures file.
+concurrency:
+  group: cla-${{ github.event.pull_request.number || github.event.issue.number }}
+  cancel-in-progress: false
+
+jobs:
+  cla:
+    name: CLA
+    # Pull request events, except closing without a merge: the action locks on any close, and an
+    # unmerged pull request may be reopened and still need signing. Comments only when they are on a
+    # pull request and either sign or ask for a recheck. The action matches the phrase
+    # case-insensitively, so contains() does too.
+    if: >-
+      (github.event_name == 'pull_request_target' &&
+        (github.event.action != 'closed' || github.event.pull_request.merged)) ||
+      (github.event.issue.pull_request &&
+        (github.event.comment.body == 'recheck' ||
+         contains(github.event.comment.body, 'I have read the CLA Document and I hereby sign the CLA')))
+    runs-on: ubuntu-latest
+    permissions:
+      pull-requests: write # comment on the pull request and lock it after merge
+      contents: write # commit each signature to the cla-signatures branch
+      actions: write # re-run the failed check once the signing comment lands, so it turns green
+    steps:
+      - uses: bramble-sh/cla-github-action@2850b5c5f9fbd32f82d68a4f5d321ed54257a80a # v2.6.2 on node24
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          path-to-document: ${{ github.server_url }}/${{ github.repository }}/blob/main/CLA.md
+          branch: cla-signatures
+          path-to-signatures: signatures/version1/cla.json
+          # The maintainer (Webvana's code is already covered by APP-STORE-EXCEPTION.md) and bots,
+          # which cannot sign.
+          allowlist: flythenimbus,dependabot[bot],github-actions[bot],bramble-release-bot[bot]
+          custom-notsigned-prcomment: >-
+            Thank you for the pull request. Before it can be merged, $you need to agree that the
+            contribution is licensed under the GPLv3 with Bramble's app store permission. It is a
+            one-page agreement, not a copyright assignment:
+            ${{ github.server_url }}/${{ github.repository }}/blob/main/CLA.md.
+            To agree, post this comment on the pull request:
+          custom-allsigned-prcomment: Every committer has signed the contributor agreement.
+          create-file-commit-message: "chore(cla): create the signatures file"
+          signed-commit-message: "chore(cla): $contributorName signed the contributor agreement in #$pullRequestNo"
+          lock-pullrequest-aftermerge: "true"

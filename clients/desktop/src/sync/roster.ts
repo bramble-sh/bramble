@@ -32,7 +32,7 @@ import {
 } from "@core/index";
 import { blobArrived } from "@core/sync/blob-arrivals";
 import { answerBlobStatus } from "@core/sync/blob-status";
-import { addDevice, mayEnroll } from "@core/sync/roster";
+import { activeDevices, addDevice, mayEnroll } from "@core/sync/roster";
 import { syncKeyFor } from "@core/sync/sync-keys";
 import {
 	type BlobSyncSession,
@@ -40,6 +40,7 @@ import {
 	wantedFromPayload,
 } from "@core/sync/transport/blob-sync";
 import type { MeshSession } from "@core/sync/transport/peer-session";
+import { relayOrDefault } from "@core/sync/transport/relay-url";
 import { startRosterSync } from "@core/sync/transport/roster-sync";
 import { parseRegistry, VAULT_REGISTRY_KEY } from "@core/vault/vault-registry";
 import { desktopCrypto } from "../adapters/crypto";
@@ -50,9 +51,17 @@ import { desktopSyncCrypto } from "../sync-crypto";
 import { emit, report } from "./bus";
 import { deviceKeypair, publishSyncIdentity } from "./keys";
 import { linkBlobSource } from "./link-blob";
-import { linkPeerSource } from "./link-peers";
+import {
+	endLink,
+	linkDevicePubs,
+	linkPeerSource,
+	loadLinkDevices,
+	pinLink,
+	recordLinkDevice,
+} from "./link-peers";
 
-const DEFAULT_RELAY = "wss://bramble-relay.flythenimbus.workers.dev";
+const onTheLink = (pub: string): boolean => linkDevicePubs().has(pub);
+
 const GROUP_KEY = "sync.group";
 const RELAY_KEY = "sync.relay";
 const ICE_KEY = "sync.iceUrl";
@@ -94,6 +103,72 @@ export async function addToLocalRoster(vaultId: string, device: RosterEntry): Pr
 	if (!mayEnroll(group.roster, device)) return;
 	await desktopStorage.setMeta(key, { ...group, roster: addDevice(group.roster, device) });
 	emit({ kind: "roster" });
+}
+
+/** Each browser's link, by the device key it syncs as, learned when it passes sync's check over the
+ * link. A browser can be removed while it's offline, so this has to outlast the connection. */
+const LINK_KEYS = "link.keys";
+type LinkKeys = Record<string, { linkKey: string; deviceId: string }>;
+
+async function recordLinkKey(vaultId: string, devicePub: string, linkKey: string): Promise<void> {
+	const group = await desktopStorage.getMeta<GroupConfig>(syncKeyFor(GROUP_KEY, vaultId));
+	const device = group?.roster.devices.find((d) => d.publicKey === devicePub);
+	if (!device) return;
+	const key = syncKeyFor(LINK_KEYS, vaultId);
+	const held = (await desktopStorage.getMeta<LinkKeys>(key)) ?? {};
+	const known = held[devicePub];
+	if (known?.linkKey === linkKey && known.deviceId === device.id) return;
+	await desktopStorage.setMeta(key, { ...held, [devicePub]: { linkKey, deviceId: device.id } });
+	// Settings lists a browser that syncs with the other devices, not with the linked browsers.
+	emit({ kind: "roster" });
+}
+
+/** The link keys of browsers that are sync devices of the open vault. */
+export async function syncingLinkKeys(): Promise<string[]> {
+	const vaultId = await activeVaultId();
+	if (!vaultId) return [];
+	const held = await desktopStorage.getMeta<LinkKeys>(syncKeyFor(LINK_KEYS, vaultId));
+	const group = await desktopStorage.getMeta<GroupConfig>(syncKeyFor(GROUP_KEY, vaultId));
+	if (!held || !group) return [];
+	const active = new Set(activeDevices(group.roster).map((d) => `${d.id} ${d.publicKey}`));
+	return Object.entries(held)
+		.filter(([devicePub, { deviceId }]) => active.has(`${deviceId} ${devicePub}`))
+		.map(([, { linkKey }]) => linkKey);
+}
+
+/**
+ * End the link of every browser this vault's group has removed, so it can't keep filling from a
+ * vault it no longer syncs with. Only a tombstone counts: a device merely missing from the roster
+ * may be from a group this vault has left. A link that couldn't be ended stays recorded for next
+ * time. See docs/desktop-link-onboarding.md.
+ */
+export async function endRemovedLinks(vaultId: string): Promise<void> {
+	const key = syncKeyFor(LINK_KEYS, vaultId);
+	const held = await desktopStorage.getMeta<LinkKeys>(key);
+	if (!held) return;
+	const group = await desktopStorage.getMeta<GroupConfig>(syncKeyFor(GROUP_KEY, vaultId));
+	if (!group) return;
+	const removed = new Set(group.roster.revoked.map((t) => t.id));
+	const active = new Set(activeDevices(group.roster).map((d) => d.publicKey));
+	const left = { ...held };
+	for (const [devicePub, { linkKey, deviceId }] of Object.entries(held)) {
+		if (!removed.has(deviceId) || active.has(devicePub)) continue;
+		try {
+			await endLink(linkKey, vaultId);
+			delete left[devicePub];
+		} catch (e) {
+			report(`sync: could not end a removed browser's link (${(e as Error).message})`);
+		}
+	}
+	if (Object.keys(left).length === Object.keys(held).length) return;
+	await desktopStorage.setMeta(key, left);
+	emit({ kind: "roster" });
+}
+
+/** The open vault's roster changed here, in Settings rather than through a peer. */
+export async function rosterChangedHere(): Promise<void> {
+	const vaultId = await syncTargetVaultId();
+	if (vaultId) await endRemovedLinks(vaultId);
 }
 
 let clockCache: { vaultId: string; clock: Promise<HybridClock> } | null = null;
@@ -177,7 +252,7 @@ async function startRoster(): Promise<void> {
 	if (!group?.groupKey) return; // not enrolled in a group yet
 
 	const { privateKey, publicKey } = await deviceKeypair();
-	const relay = (await desktopStorage.getMeta<string>(RELAY_KEY)) ?? DEFAULT_RELAY;
+	const relay = relayOrDefault(await desktopStorage.getMeta<string>(RELAY_KEY));
 	const iceUrl = (await desktopStorage.getMeta<string>(ICE_KEY)) ?? "";
 
 	for (const session of rosterSessions) session.stop();
@@ -213,6 +288,7 @@ async function startRoster(): Promise<void> {
 				roster: mergeRemoteRoster(g.roster, decodeRoster(rosterJson)),
 			});
 			emit({ kind: "roster" });
+			await endRemovedLinks(vaultId).catch(() => {});
 		},
 		fetchLocalPayload: async () => encodeEntriesPayload(await blobStore.readEntriesPayload()),
 		pushRemotePayload: async (json) => {
@@ -256,11 +332,22 @@ async function startRoster(): Promise<void> {
 		},
 	} satisfies Parameters<typeof startRosterSync>[0];
 
+	await loadLinkDevices();
+	void endRemovedLinks(vaultId).catch(() => {});
 	rosterSessions = [
-		await startRosterSync(common),
+		// A browser on this machine syncs over the link only, never the relay.
+		await startRosterSync({ ...common, skipPeer: onTheLink }),
 		// Browsers paired to this app, over the pipe they already have. Started second so a relay
 		// failure does not cost the local peers, which are the ones that work offline.
-		await startRosterSync({ ...common, peerSource: linkPeerSource }),
+		await startRosterSync({
+			...common,
+			peerSource: linkPeerSource,
+			onAuthenticated: (pub, linkKey) => {
+				recordLinkDevice(pub);
+				pinLink(linkKey, vaultId);
+				void recordLinkKey(vaultId, pub, linkKey).catch(() => {});
+			},
+		}),
 	];
 	if (gen !== sessionGen) return; // torn down while the sessions started
 	// Its own failure, reported: entry sync carries on without it.
@@ -270,6 +357,7 @@ async function startRoster(): Promise<void> {
 			blobs: desktopFiles.forVault(vaultId).blobs,
 			wanted: async () => wantedFromPayload(await blobStore.readEntriesPayload()),
 			localSources: [linkBlobSource],
+			skipPeer: onTheLink,
 			onReceived: blobArrived,
 		});
 	} catch (e) {
@@ -277,13 +365,30 @@ async function startRoster(): Promise<void> {
 	}
 }
 
-async function maybeStartRosterSync(): Promise<void> {
-	if (rosterSessions.length > 0) return;
-	try {
-		await startRoster();
-	} catch (e) {
-		report(`sync error: ${(e as Error).message}`);
-	}
+/** A start in progress. `rosterSessions` is only filled at the end of one, so without this two
+ * callers in quick succession each started a full set, and the first set ran on unowned. */
+let starting: Promise<void> | null = null;
+
+/** Start ongoing sync if it is not running and this vault is in a group. */
+export function maybeStartRosterSync(): Promise<void> {
+	if (rosterSessions.length > 0) return Promise.resolve();
+	starting ??= startRoster()
+		.catch((e) => report(`sync error: ${(e as Error).message}`))
+		.finally(() => {
+			starting = null;
+		});
+	return starting;
+}
+
+/**
+ * "Sync now": what an unlock does, without the lock. Every peer is dropped and found again. A start
+ * still under way is let finish first, so its sessions are the ones replaced rather than kept.
+ */
+export async function restartRosterSync(): Promise<void> {
+	if (await desktopCrypto.isLocked()) throw new Error("the vault is locked");
+	await starting;
+	stopRosterSync();
+	await maybeStartRosterSync();
 }
 
 export function stopRosterSync(): void {
@@ -320,13 +425,24 @@ export async function retargetActiveVault(next: string | null): Promise<void> {
  * at boot; returns an unsubscribe.
  */
 export function initRosterSync(): () => void {
-	return onVaultStateChange((locked) => {
+	const unlocked = () => {
+		void publishSyncIdentity();
+		void maybeStartRosterSync();
+	};
+	const off = onVaultStateChange((locked) => {
 		if (locked) stopRosterSync();
-		else {
-			void publishSyncIdentity();
-			void maybeStartRosterSync();
-		}
+		else unlocked();
 	});
+	// A window that opens onto a vault already unlocked sees no unlock event: the key lives in the
+	// Rust process, which outlives the window. On Wayland every reopen is this case, because
+	// closing destroys the window (lifetime.rs).
+	void desktopCrypto
+		.isLocked()
+		.then((locked) => {
+			if (!locked) unlocked();
+		})
+		.catch(() => {});
+	return off;
 }
 
 /**

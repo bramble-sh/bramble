@@ -35,7 +35,7 @@ things that keep it defensible:
 | Control | Why |
 |---|---|
 | Required reviewer on every environment | Repository write is not enough. A run waits for a person |
-| The release commit is made by an app, not by `GITHUB_TOKEN` | The ruleset on `main` requires a pull request, CodeQL and a green `CI`, which a commit that does not exist yet can never satisfy. `GITHUB_TOKEN` cannot be exempted: a ruleset evaluates it as the GitHub Actions app, and a personal repository cannot add that app to a bypass list (adding `github-actions[bot]` as a *user* was measured and does nothing). So a `bramble-release-bot` app, owned by the maintainer and installed only on this repository with **contents:write and nothing else**, is on the bypass list, and workflows mint a short-lived token per run. It may commit; it may not dispatch a workflow, read a secret, or touch anything else |
+| The release commit is made by an app, not by `GITHUB_TOKEN` | The ruleset on `main` requires a pull request, CodeQL and a green `CI`, which a commit that does not exist yet can never satisfy. `GITHUB_TOKEN` should not be exempted: a ruleset evaluates it as the GitHub Actions app, so the exemption would cover every workflow (adding `github-actions[bot]` as a *user* was measured and does nothing). So a `bramble-release-bot` app, owned by the organization and installed only on this repository with **contents:write and nothing else**, is on the bypass list, and workflows mint a short-lived token per run. It may commit; it may not dispatch a workflow, read a secret, or touch anything else |
 | One environment per target | A Firefox release cannot read the Android keystore |
 | No third-party actions in a job holding a permanent key | Their supply chain becomes ours the moment they run beside a key |
 | Every action pinned by commit, never a tag | A moved tag is a supply chain compromise with a signing key attached |
@@ -64,9 +64,8 @@ run, one set of touches, and then the token goes in a drawer as the recovery pat
 ## The shape
 
 Each target gets one workflow that builds, signs and publishes. There is no "CI builds, you sign"
-split any more, because the keys are in CI too. Windows keeps its own shape inside that: SignPath
-verifies where an installer came from, and its trust is configured around `sign-windows.yml`, so
-that workflow stays separate, throwaway updater key and all, with a build job and a sign job of its
+split any more, because the keys are in CI too. Windows keeps its own shape inside that: Azure's
+signing identity trusts only `sign-windows.yml`'s environment, so that workflow stays separate, throwaway updater key and all, with a build job and a sign job of its
 own (see release-signing.md, "Windows"). What moved is the other end:
 `build-windows.ts --ci-start` is dispatched by the desktop workflow's first job instead of a Mac,
 and `--ci-collect`, which re-signs the installer for the updater, runs in the publish job that holds
@@ -134,7 +133,7 @@ tag with one `latest.json`, so none of them can leave the Mac until all three ca
 | **1** | **Android**, fully from CI. Built: `android-release.yml`, `release android` | keystore + password |
 | **2** | **Firefox**. Built: `firefox-release.yml`, `release firefox`, with an AMO preflight | AMO credentials |
 | **3** | **Chrome**. Built: `chrome-release.yml`, `release chromium`, with a store preflight | CWS key + service account |
-| **4** | **Desktop**. Built: `desktop-release.yml`, `release desktop`: Linux in the Debian container on native amd64 + arm64 runners, macOS compiled in a job holding no secrets, Windows through `sign-windows.yml` and SignPath, then one approved macOS job that bundles, codesigns, notarizes, signs every updater artifact and publishes. APT through `apt-release.yml`, after the release, behind its own approval | updater key, Developer ID `.p12`, ASC key |
+| **4** | **Desktop**. Built: `desktop-release.yml`, `release desktop`: Linux in the Debian container on native amd64 + arm64 runners, macOS compiled in a job holding no secrets, Windows through `sign-windows.yml` and Azure Artifact Signing, then one approved macOS job that bundles, codesigns, notarizes, signs every updater artifact and publishes. APT through `apt-release.yml`, after the release, behind its own approval | updater key, Developer ID `.p12`, ASC key |
 | **later** | OIDC custody | |
 
 Android leads because it is self-contained and proves every part of the pattern in one place: a
@@ -145,12 +144,12 @@ APT last.
 
 Shipping all three together is also why desktop is the one target that can be told to leave a
 platform out: `release desktop <version> --skip=windows`, or several, comma-separated. It exists
-because SignPath approval is outside this repository, so Windows can be unavailable for reasons
-macOS and Linux are not, and a release should not have to wait on it. The cost is that `latest.json`
+because Windows signing depends on an Azure account outside this repository, so Windows can be
+unavailable for reasons macOS and Linux are not, and a release should not have to wait on it. The cost is that `latest.json`
 holds one version for every platform, so a skipped platform drops out of the manifest rather than
 staying where it was, and its users' manual update checks fail until it is back. The dispatcher
 warns for each skipped platform that has already shipped and then proceeds; it refuses only the case
-where nothing could work, a Windows build with SignPath unconfigured. The long-term fix is
+where nothing could work, a Windows build with Azure signing unconfigured. The long-term fix is
 per-platform manifests through Tauri's `{{target}}` endpoint templating, which needs a release with
 the new endpoint in it before it helps anyone.
 
@@ -175,6 +174,32 @@ sat undispatched; the run URLs are printed instead.
 Neither the dispatch order nor the approval order matters: each release commits over the others'
 version bumps (see the release commit, above), and retries if two land in the same second. `all`
 still does not exist: four approvals and four sets of notes, to save one command.
+
+## Publishing release notes
+
+`--publish-release-notes` on a GitHub-route release (`pnpm release desktop minor
+--publish-release-notes`) sets the workflow's `publish_release_notes` input, off by default, which
+runs the release's no-op "Publish release notes" job instead of skipping it: the API shows a run's
+jobs but not its inputs. `publish-release-notes.yml` runs whenever a release run finishes. While
+any other release that asked to publish is still going it does nothing, so the last one to finish
+drafts once for every such release published that week: "General updates" for what every platform
+got, then Desktop, Browser extensions and Mobile, merged by DeepSeek (without it each platform
+lists its own notes). The draft is in that run's summary, and the publish job waits for an approval
+in the `release-notes` environment. Approving it emails Buttondown subscribers and posts the same
+text on the blog (`website/src/content/blog/whats-new-<date>.md`, committed to main by the release
+app, which deploys the site). At most one email goes out every seven days, checked when drafting
+and again when publishing; hand-written emails count. iOS never takes part, since it publishes
+after App Store review. To draft again after rejecting one: `gh workflow run
+publish-release-notes.yml`.
+
+To see what would be published without running anything: `pnpm release-notes:preview [tag...]`
+merges each workflow's newest release (or the tags given) and prints the email, skipping the
+run and weekly checks. It only reads GitHub releases and calls DeepSeek; nothing is sent or
+committed.
+
+Setup: environment `release-notes-draft` (no reviewer) holds `DEEPSEEK_API_KEY` and a read-only
+`BUTTONDOWN_API_KEY`; environment `release-notes` (required reviewer) holds the sending
+`BUTTONDOWN_API_KEY`, so it is out of reach until the approval.
 
 ## What this never buys
 

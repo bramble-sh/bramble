@@ -21,14 +21,19 @@ const h = vi.hoisted(() => ({
 	releaseCeremony: undefined as (() => void) | undefined,
 	/** What the mocked get ceremony does with its host (default: wait for releaseCeremony). */
 	runGet: undefined as
-		| ((host: { verifyUser: () => Promise<boolean> }) => Promise<unknown>)
+		| ((host: { verifyUser: () => Promise<boolean>; unlockVerifies: boolean }) => Promise<unknown>)
 		| undefined,
+	/** The stored "Confirm passkeys once per unlock" pref. */
+	confirmOnce: false,
 	/** App routes the provider opened in a detached window, and the handlers marked extension-only. */
 	openedPaths: [] as string[],
 	extensionOnly: new Set<unknown>(),
+	/** Detached windows the provider closed. */
+	closedWindows: [] as number[],
 }));
 
 vi.mock("./prefs", () => ({
+	getPasskeyConfirmOncePerUnlock: async () => h.confirmOnce,
 	getPasskeyProviderEnabled: () =>
 		new Promise<boolean>((resolve) => {
 			h.settlePref = resolve;
@@ -56,7 +61,12 @@ vi.mock("../platform-api", () => ({
 		runtime: { sendMessage: async () => {} },
 		tabs: { query: async () => [], sendMessage: async () => {} },
 		action: {},
-		windows: { create: async () => ({ id: 1 }), remove: async () => {} },
+		windows: {
+			create: async () => ({ id: 1 }),
+			remove: async (id: number) => {
+				h.closedWindows.push(id);
+			},
+		},
 	},
 }));
 
@@ -72,7 +82,10 @@ vi.mock("./session", () => ({ vaultLocked: () => false }));
 
 vi.mock("./webauthn-proxy", () => ({
 	runCreateCeremony: async () => ({ approved: false }),
-	runGetCeremony: (_req: unknown, host: { verifyUser: () => Promise<boolean> }) =>
+	runGetCeremony: (
+		_req: unknown,
+		host: { verifyUser: () => Promise<boolean>; unlockVerifies: boolean },
+	) =>
 		h.runGet
 			? h.runGet(host)
 			: new Promise((resolve) => {
@@ -87,7 +100,9 @@ async function load() {
 	h.applied = [];
 	h.hookThrows = false;
 	h.runGet = undefined;
+	h.confirmOnce = false;
 	h.openedPaths = [];
+	h.closedWindows = [];
 	h.extensionOnly.clear();
 	const mod = await import("./webauthn-provider");
 	mod.setProviderApplyHook(async (enabled) => {
@@ -203,6 +218,14 @@ describe("confirm it's you", () => {
 		expect(await pending).toEqual({ approved: true });
 	});
 
+	it("hands the ceremony the once-per-unlock pref, read when it starts", async () => {
+		const m = await load();
+		h.runGet = async (host) => ({ unlockVerifies: host.unlockVerifies });
+		expect(await m.depsForTab(1).ceremony(req)).toEqual({ unlockVerifies: false });
+		h.confirmOnce = true;
+		expect(await m.depsForTab(1).ceremony(req)).toEqual({ unlockVerifies: true });
+	});
+
 	it("a no from the window is a no", async () => {
 		const m = await load();
 		h.runGet = async (host) => ({ approved: await host.verifyUser() });
@@ -211,5 +234,86 @@ describe("confirm it's you", () => {
 		const id = new URL(h.openedPaths[0] ?? "", "chrome-extension://x").searchParams.get("id");
 		await h.handlers.get("PASSKEY_VERIFY_RESULT")?.({ payload: { id, verified: false } });
 		expect(await pending).toEqual({ approved: false });
+	});
+
+	// A key tap detaches Chrome's proxy, which ends the site's request (docs/passkey-provider.md).
+	describe("when the confirm ended the site's request", () => {
+		const verifying = async (host: { verifyUser: () => Promise<boolean> }) => {
+			const verified = await host.verifyUser();
+			return { approved: verified, userVerified: verified };
+		};
+
+		async function confirmed(m: Awaited<ReturnType<typeof load>>, gone: boolean, verified = true) {
+			h.runGet = verifying;
+			const pending = m.depsForTab(1, () => gone).ceremony(req);
+			await flush();
+			const id = new URL(h.openedPaths.at(-1) ?? "", "chrome-extension://x").searchParams.get("id");
+			const reply = await h.handlers.get("PASSKEY_VERIFY_RESULT")?.({
+				payload: { id, verified },
+			});
+			await pending;
+			return reply;
+		}
+
+		it("tells the window to send the user back, and leaves it open", async () => {
+			const m = await load();
+			expect(await confirmed(m, true)).toEqual({ ok: true, data: { signInAgain: true } });
+			expect(h.closedWindows).toEqual([]);
+		});
+
+		it("lets the site's next try skip the prompt, once", async () => {
+			const m = await load();
+			await confirmed(m, true);
+			const opened = h.openedPaths.length;
+
+			expect(await m.depsForTab(1).ceremony(req)).toEqual({ approved: true, userVerified: true });
+			expect(h.openedPaths).toHaveLength(opened);
+
+			void m.depsForTab(1).ceremony(req);
+			await flush();
+			expect(h.openedPaths).toHaveLength(opened + 1);
+		});
+
+		it("doesn't carry over to another origin", async () => {
+			const m = await load();
+			await confirmed(m, true);
+			const opened = h.openedPaths.length;
+			h.runGet = verifying;
+			void m.depsForTab(1).ceremony({ ...req, origin: "https://sub.example.com" });
+			await flush();
+			expect(h.openedPaths).toHaveLength(opened + 1);
+		});
+
+		it("expires", async () => {
+			const m = await load();
+			await confirmed(m, true);
+			const opened = h.openedPaths.length;
+			const later = Date.now() + 61_000;
+			const now = vi.spyOn(Date, "now").mockReturnValue(later);
+			void m.depsForTab(1).ceremony(req);
+			await flush();
+			now.mockRestore();
+			expect(h.openedPaths).toHaveLength(opened + 1);
+		});
+
+		it("grants nothing while the site's request is still alive", async () => {
+			const m = await load();
+			expect(await confirmed(m, false)).toEqual({ ok: true, data: { signInAgain: false } });
+			expect(h.closedWindows).toEqual([99]);
+			const opened = h.openedPaths.length;
+			void m.depsForTab(1).ceremony(req);
+			await flush();
+			expect(h.openedPaths).toHaveLength(opened + 1);
+		});
+
+		it("grants nothing for a no", async () => {
+			const m = await load();
+			expect(await confirmed(m, true, false)).toEqual({ ok: true, data: { signInAgain: false } });
+			expect(h.closedWindows).toEqual([99]);
+			const opened = h.openedPaths.length;
+			void m.depsForTab(1).ceremony(req);
+			await flush();
+			expect(h.openedPaths).toHaveLength(opened + 1);
+		});
 	});
 });

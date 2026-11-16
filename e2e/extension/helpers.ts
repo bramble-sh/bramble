@@ -1,5 +1,11 @@
 import { readFileSync } from "node:fs";
-import { type BrowserContext, expect, type Page, type Worker } from "@playwright/test";
+import {
+	type BrowserContext,
+	type CDPSession,
+	expect,
+	type Page,
+	type Worker,
+} from "@playwright/test";
 
 export const optionsUrl = (id: string) => `chrome-extension://${id}/options.html`;
 export const popupUrl = (id: string) => `chrome-extension://${id}/popup.html`;
@@ -134,7 +140,7 @@ export async function seedTotpLogin(popup: Page, name: string, key: string) {
 /** Seed one payment card. Cards are offered on any payment form, so it needs no URL. */
 export async function seedExampleCard(popup: Page) {
 	await popup.getByRole("button", { name: /Add New/i }).click();
-	await popup.getByRole("button", { name: /Payment card/i }).click();
+	await popup.getByRole("button", { name: /Credit or debit card/i }).click();
 	await popup.getByLabel("Name", { exact: true }).fill("Personal Visa");
 	await popup.getByLabel("Cardholder name", { exact: true }).fill("Alice Example");
 	await popup.getByLabel("Card number", { exact: true }).fill("4242424242424242");
@@ -148,7 +154,7 @@ export async function seedExampleCard(popup: Page) {
 /** A second card, so a pick has something to be switched away from (and an order to change). */
 export async function seedSecondCard(popup: Page) {
 	await popup.getByRole("button", { name: /Add New/i }).click();
-	await popup.getByRole("button", { name: /Payment card/i }).click();
+	await popup.getByRole("button", { name: /Credit or debit card/i }).click();
 	await popup.getByLabel("Name", { exact: true }).fill("Travel Mastercard");
 	await popup.getByLabel("Cardholder name", { exact: true }).fill("Alice Example");
 	await popup.getByLabel("Card number", { exact: true }).fill("5555555555554444");
@@ -179,28 +185,60 @@ function findById(node: CdpNode, id: string): CdpNode | undefined {
 }
 
 /**
- * Click a corner-prompt button by its `data-tp-action`. The card is a closed shadow root that
- * selectors can't reach, so locate the button over CDP (which pierces closed roots) and send a
- * real mouse click to its centre.
+ * Run `use` on the corner prompt's first node matching `selector` (0 when there is none). The
+ * card is a closed shadow root that selectors can't reach, so it is read over CDP, which pierces
+ * closed roots.
  */
-export async function clickCornerAction(page: Page, action: string) {
+async function withCornerNode<T>(
+	page: Page,
+	selector: string,
+	use: (cdp: CDPSession, nodeId: number) => Promise<T>,
+): Promise<T> {
 	const cdp = await page.context().newCDPSession(page);
 	try {
 		const { root } = await cdp.send("DOM.getDocument", { depth: -1, pierce: true });
 		const shadow = findById(root, "bramble-corner-prompt")?.shadowRoots?.[0];
 		if (!shadow) throw new Error("corner prompt is not mounted");
-		const { nodeId } = await cdp.send("DOM.querySelector", {
-			nodeId: shadow.nodeId,
-			selector: `[data-tp-action="${action}"]`,
-		});
-		if (!nodeId) throw new Error(`corner prompt has no "${action}" button`);
-		const { quads } = await cdp.send("DOM.getContentQuads", { nodeId });
-		const q = quads[0];
-		if (!q) throw new Error(`"${action}" button is not rendered`);
-		await page.mouse.click((q[0]! + q[4]!) / 2, (q[1]! + q[5]!) / 2);
+		const { nodeId } = await cdp.send("DOM.querySelector", { nodeId: shadow.nodeId, selector });
+		return await use(cdp, nodeId);
 	} finally {
 		await cdp.detach();
 	}
+}
+
+/** Send a real mouse click to the centre of the corner prompt's `selector`. */
+export async function clickCornerElement(page: Page, selector: string) {
+	await withCornerNode(page, selector, async (cdp, nodeId) => {
+		if (!nodeId) throw new Error(`corner prompt has no ${selector}`);
+		const { quads } = await cdp.send("DOM.getContentQuads", { nodeId });
+		const q = quads[0];
+		if (!q) throw new Error(`${selector} is not rendered`);
+		await page.mouse.click((q[0]! + q[4]!) / 2, (q[1]! + q[5]!) / 2);
+	});
+}
+
+/** Click a corner-prompt button by its `data-tp-action`. */
+export async function clickCornerAction(page: Page, action: string) {
+	await clickCornerElement(page, `[data-tp-action="${action}"]`);
+}
+
+/** Whether the corner prompt holds a node matching `selector`. */
+export async function cornerHas(page: Page, selector: string): Promise<boolean> {
+	return withCornerNode(page, selector, async (_cdp, nodeId) => nodeId !== 0);
+}
+
+/** The `value` of the corner prompt's `selector`. */
+export async function cornerValue(page: Page, selector: string): Promise<string> {
+	return withCornerNode(page, selector, async (cdp, nodeId) => {
+		if (!nodeId) throw new Error(`corner prompt has no ${selector}`);
+		const { object } = await cdp.send("DOM.resolveNode", { nodeId });
+		const { result } = await cdp.send("Runtime.callFunctionOn", {
+			objectId: object.objectId,
+			functionDeclaration: "function () { return this.value; }",
+			returnByValue: true,
+		});
+		return String(result.value);
+	});
 }
 
 /** From an unlocked popup, open Settings and select the Device sync panel. */
@@ -245,7 +283,7 @@ export async function localStorageKeys(context: BrowserContext): Promise<string[
 export async function addVirtualAuthenticator(
 	page: Page,
 	opts: { hasPrf?: boolean; transport?: "internal" | "usb" } = {},
-): Promise<{ authenticatorId: string; remove: () => Promise<void> }> {
+): Promise<{ authenticatorId: string; cdp: CDPSession; remove: () => Promise<void> }> {
 	const { hasPrf = true, transport = "internal" } = opts;
 	const cdp = await page.context().newCDPSession(page);
 	await cdp.send("WebAuthn.enable");
@@ -264,6 +302,7 @@ export async function addVirtualAuthenticator(
 	});
 	return {
 		authenticatorId,
+		cdp,
 		remove: () => cdp.send("WebAuthn.removeVirtualAuthenticator", { authenticatorId }),
 	};
 }

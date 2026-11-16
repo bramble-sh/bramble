@@ -16,6 +16,7 @@ import type { PickedAttachment } from "../adapters/files";
 import { buildBackup } from "../backup/archive";
 import { usePlatform } from "../context/PlatformContext";
 import type { PlacedAttachment } from "../import/types";
+import { isVaultEmpty, readVaultContents } from "../vault/vault-empty";
 import {
 	decodeVaultBlob,
 	type EncryptedEntry,
@@ -231,12 +232,14 @@ import {
 	wrapRecoverySlot as buildRecoverySlot,
 	buildVaultBytes,
 } from "../vault/build-vault";
+import { sameBytes } from "../vault/combine-into";
 import { createEntriesBlobStore } from "../vault/entries-blob";
 import {
 	conflictsOf,
 	createEntryMutations,
 	emptyVaultEntries,
 	type ImportedFile,
+	type ImportOptions,
 	type OpenedVersion,
 	type VaultEntries,
 	vaultEntriesFromPayload,
@@ -258,7 +261,6 @@ import {
 	addWebauthnSlot,
 	describeWebauthnKeys,
 	matchSlotByCredentialId,
-	needsSaltMismatchRetry,
 	removePasswordSlot,
 	removeWebauthnSlot,
 	type StoredKeyLabel,
@@ -268,7 +270,6 @@ import {
 } from "../vault/slot-policy";
 import {
 	createPrfCredential,
-	getPrfSecret,
 	getPrfSecretAcrossRpIds,
 	unlockRpIdOrder,
 	type WebauthnKeyKind,
@@ -317,6 +318,8 @@ export interface VaultState {
 	canAttachFiles: boolean;
 	/** Whether this platform can hand a decrypted attachment to another app; gates Open. */
 	canOpenFiles: boolean;
+	/** Whether this platform saves an attachment through a save dialog of its own; gates Save. */
+	canSaveFiles: boolean;
 	/** Whether this platform picks attachments with its own dialog rather than `<input>`. */
 	canPickFiles: boolean;
 	/** Entries with sibling versions or a concurrent delete, by id (docs/sync-conflicts.md). */
@@ -338,6 +341,17 @@ export interface VaultState {
 }
 
 /** Vault actions. Referentially stable for the provider's lifetime. */
+/** The open vault as its disk has it. */
+export interface DiskVault {
+	entries: Entry[];
+	files: FileRecord[];
+	settings: SyncedSettings | undefined;
+	/** Entries in a sync conflict. */
+	conflicted: number;
+	/** Entries that won't open. */
+	unreadable: number;
+}
+
 export interface VaultActions {
 	/** `vaultId` names the vault when the caller just minted it and the registry's active id hasn't
 	 * caught up through React state yet (restore's first vault). Omit it to unlock the active one. */
@@ -352,6 +366,14 @@ export interface VaultActions {
 	 * security-key ceremony errors.
 	 */
 	deleteVault(auth: DeleteVaultAuth): Promise<boolean>;
+	/** Remove a vault linking left empty (never the open one; re-checks emptiness). */
+	deleteEmptyVault(
+		id: string,
+		entryCount: number,
+		fileCount: number,
+		/** The vault's bytes when it was counted: a save since then keeps it. */
+		unchangedFrom?: Uint8Array,
+	): Promise<boolean>;
 	/** Save an encrypted `.bramble` backup of the vault. Rejects where the platform can't save files. */
 	/** Save a backup file. Resolves with any attachments it had to leave out. */
 	/** Throws BackupIncompleteError rather than save a backup missing any of the vault. */
@@ -385,6 +407,9 @@ export interface VaultActions {
 	/** Decrypt an attachment and hand it to the OS to open, share or save. Rejects where the
 	 * platform cannot, so check `canOpenFiles` first. */
 	openFile(record: FileRecord): Promise<void>;
+	/** Decrypt an attachment into a place the user picks. False if they cancel. Rejects where
+	 * the platform cannot, so check `canSaveFiles` first. */
+	saveFile(record: FileRecord): Promise<boolean>;
 	/** Whether this device holds an attachment's bytes yet. A file attached on another device
 	 * is named by the vault before its bytes arrive (see docs/file-attachments.md). */
 	hasFile(record: FileRecord): Promise<boolean>;
@@ -396,8 +421,13 @@ export interface VaultActions {
 	/**
 	 * Add entries in one write, with any files the import brings. Every file is sealed first,
 	 * so one that cannot be stops the import before anything is written: whole or not at all.
+	 * Resolves with the hash of each file stored.
 	 */
-	importEntries(items: EntryData[], attachments?: PlacedAttachment[]): Promise<void>;
+	importEntries(
+		items: EntryData[],
+		attachments?: PlacedAttachment[],
+		opts?: ImportOptions,
+	): Promise<string[]>;
 	/** The displayed version of an entry, for an edit form to save against (see `updateEntry`). */
 	openVersion(id: string): OpenedVersion | undefined;
 	/**
@@ -430,6 +460,12 @@ export interface VaultActions {
 	/** The current entries, read synchronously: includes writes committed before their
 	 * render has landed, so sequential mutations see their own earlier writes. */
 	readEntries(): Entry[];
+	/** The open vault as its disk has it. Another window's save reaches memory only if the background
+	 * made it, so anything that must not miss one reads here. */
+	readOpenVaultFromDisk(): Promise<DiskVault>;
+	/** A synced setting of the open vault. Throws while that vault is still loading. */
+	readSetting(key: string): unknown;
+	writeSetting(key: string, value: unknown): Promise<void>;
 	verifyMasterPassword(password: string): Promise<boolean>;
 	/** Check a recovery code against the vault's recovery slots without changing lock state. */
 	verifyRecoveryCode(code: string): Promise<boolean>;
@@ -463,15 +499,26 @@ export interface VaultActions {
 	/** Re-probe biometric availability + enabled (e.g. when Settings opens). */
 	refreshBiometric(): Promise<void>;
 	/** Start adding a device: returns a one-time pairing code and listens for the joiner. `password`
-	 * is the re-entered master password (Item A) that admission-signs the joiner; omit it (or pass it
-	 * for a security-key-only vault, where it's ignored) to enroll without an admission signature. */
-	inviteDevice(relayUrl: string, iceUrl?: string, password?: string): Promise<string>;
+	 * is the re-entered master password (Item A) that admission-signs the joiner; a vault without
+	 * one may not pair (MasterPasswordRequiredError). */
+	inviteDevice(
+		relayUrl: string,
+		iceUrl: string | undefined,
+		password: string,
+		opts?: { viaLink?: boolean },
+	): Promise<string>;
 	/** Join an existing group from a pairing code; rebuilds this device's vault under the chosen unlock method. */
-	joinGroup(pairingCode: string, unlock: JoinUnlock): Promise<void>;
+	joinGroup(pairingCode: string, unlock: JoinUnlock, opts?: { viaLink?: boolean }): Promise<void>;
 	/** Setup-flow join: create a NEW vault from a pairing code (dedups to an existing vault if already
 	 * a member), then run the join in that vault's context and unlock into it. Resolves when the join
-	 * completes. Drives `joining` / `joinError`. See docs/multiple-vaults.md. */
-	startJoin(pairingCode: string, unlock: JoinUnlock, label?: string): Promise<void>;
+	 * completes, with the id of the vault it opened. Drives `joining` / `joinError`. See
+	 * docs/multiple-vaults.md. */
+	startJoin(
+		pairingCode: string,
+		unlock: JoinUnlock,
+		label?: string,
+		opts?: { viaLink?: boolean },
+	): Promise<string>;
 	/** Revoke a device from the sync group (roster tombstone); propagates over ongoing sync. */
 	removeDevice(deviceId: string): Promise<void>;
 }
@@ -510,6 +557,9 @@ function emptyVaultSyncState(): VaultSyncState {
 
 const NO_CONFLICTS: ReadonlyMap<string, EntryConflict> = new Map();
 
+/** What the provider's loaded marker compares: a vault's id, or "" before the registry has one. */
+const vaultKey = (id: string | null | undefined): string => id ?? "";
+
 // State and actions ride separate contexts so a pure-action consumer (useVaultActions)
 // never re-renders on a state change, and the state value carries only state deps.
 const VaultStateContext = createContext<VaultState | null>(null);
@@ -525,6 +575,7 @@ export function VaultProvider({ children }: { children: ReactNode }) {
 		exchange,
 		backupCreds,
 		files: fileAdapter,
+		desktopLink,
 	} = usePlatform();
 	// Vault actions reject with copy the screens render directly, so it has to be translated
 	// here rather than at each call site. Internal invariants below stay untranslated on purpose.
@@ -538,6 +589,7 @@ export function VaultProvider({ children }: { children: ReactNode }) {
 		syncKey,
 		createRecord,
 		dropActiveRecord,
+		forgetEmptyRecord,
 		selectVault,
 		refresh: refreshRegistry,
 	} = useVaultRegistry();
@@ -579,8 +631,8 @@ export function VaultProvider({ children }: { children: ReactNode }) {
 	// current entries / labels / lock state without listing them as deps. That keeps every
 	// action referentially stable (its own context, never re-firing pure-action subscribers).
 	// Assigned during render: idempotent, the blessed idiom for a latest-value ref.
-	const latestRef = useRef({ entries, webauthnKeyLabels, isLocked, biometricEnabled });
-	latestRef.current = { entries, webauthnKeyLabels, isLocked, biometricEnabled };
+	const latestRef = useRef({ entries, webauthnKeyLabels, isLocked, biometricEnabled, activeId });
+	latestRef.current = { entries, webauthnKeyLabels, isLocked, biometricEnabled, activeId };
 
 	// Sync metadata kept alongside (not on) the user-facing Entry: per-entry HLC
 	// stamps and the deletion graveyard. Held in refs because mutations thread
@@ -595,6 +647,18 @@ export function VaultProvider({ children }: { children: ReactNode }) {
 	// edit. One ref, reset in one piece, so a closing vault can't leave a field behind.
 	// See docs/synced-settings.md and docs/sync-conflicts.md.
 	const vaultStateRef = useRef<VaultSyncState>(emptyVaultSyncState());
+	// Which vault those refs hold, or null when they hold none. A mutation rewrites the whole blob
+	// from them, so one made before they hold the open vault wipes it, or pours another vault into
+	// it. The ref is what writes check; the state is what `synced.ready` reads.
+	const loadedVaultRef = useRef<string | null>(null);
+	const [loadedVault, setLoadedVault] = useState<string | null>(null);
+	const reloadAfterMergeRef = useRef<() => void>(() => {});
+	// Moves on when the open vault closes or changes, so a reload that started before can't land after.
+	const openGenerationRef = useRef(0);
+	const markLoaded = useCallback((key: string | null) => {
+		loadedVaultRef.current = key;
+		setLoadedVault(key);
+	}, []);
 	// Mirrored in state so consumers re-render when a value changes, including when a remote
 	// merge lands one. The ref is what mutations thread; this is what the UI reads.
 	const [syncedSettings, setSyncedSettings] = useState<SyncedSettings | undefined>(undefined);
@@ -701,8 +765,11 @@ export function VaultProvider({ children }: { children: ReactNode }) {
 	// `vaultId` names the vault when the caller just created or selected it and this closure's
 	// `activeId` hasn't caught up (the restore screen's first-vault unlock).
 	const loadEntries = useCallback(
-		async (vaultId?: string) => {
+		async (vaultId?: string, superseded?: () => boolean) => {
 			const targetId = vaultId ?? activeId;
+			// Tracked only where another window can write under this one.
+			const tracked = (ciphertext: Uint8Array) =>
+				crypto.notifyExternalChange ? { diskSeen: ciphertext } : {};
 			// Bind the eventual plaintext cache publish to the unlocked session that started this
 			// load, before any blob read/decrypt await can cross a lock/unlock or vault switch.
 			// A lease that cannot be issued is the same class of refusal as one that is rejected
@@ -712,9 +779,11 @@ export function VaultProvider({ children }: { children: ReactNode }) {
 				return undefined;
 			});
 			const { blob } = await readDecodedBlob();
+			if (superseded?.()) return;
 			if (blob.entriesCiphertext.length === 0) {
-				vaultStateRef.current = emptyVaultSyncState();
+				vaultStateRef.current = { ...emptyVaultSyncState(), ...tracked(blob.entriesCiphertext) };
 				latestRef.current = { ...latestRef.current, entries: [] };
+				markLoaded(vaultKey(targetId));
 				setConflicts(NO_CONFLICTS);
 				setSyncedSettings(undefined);
 				setFiles([]);
@@ -768,6 +837,7 @@ export function VaultProvider({ children }: { children: ReactNode }) {
 					console.warn("[vault] combining siblings on load failed; keeping the conflict:", e);
 				}
 			}
+			if (superseded?.()) return;
 			setSyncedSettings(payload.settings);
 			setFiles(liveFiles(payload));
 			// Advance this device's clock past every stamp it just read, so the next
@@ -788,6 +858,7 @@ export function VaultProvider({ children }: { children: ReactNode }) {
 					dekIv: enc.dekIv,
 				})),
 			);
+			if (superseded?.()) return;
 			// Decode everything readable BEFORE any write: a failed open must leave the vault as it was.
 			const unreadable: EncryptedEntry[] = [];
 			const decrypted: Entry[] = [];
@@ -828,14 +899,29 @@ export function VaultProvider({ children }: { children: ReactNode }) {
 			const { entries: _entries, ...syncState } = loaded;
 			// Stamps and entries change together, as in commitEntries: a write or an opened version
 			// read before the render lands would otherwise pair new stamps with old content.
-			vaultStateRef.current = syncState;
+			// What this load read, not what the disk holds by now: a save since then must still merge.
+			vaultStateRef.current = { ...syncState, ...tracked(blob.entriesCiphertext) };
 			latestRef.current = { ...latestRef.current, entries: decrypted };
+			markLoaded(vaultKey(targetId));
 			setConflicts(conflictsOf(loaded));
 			setEntries(decrypted);
 			await publishIndex(toAutofillIndex(decrypted), indexLease);
 		},
-		[readDecodedBlob, crypto, storage, autofill, ensureClock, publishIndex, activeId],
+		[readDecodedBlob, crypto, storage, autofill, ensureClock, publishIndex, activeId, markLoaded],
 	);
+
+	// Another window saved: read it, unless this vault has closed or changed by the time that lands.
+	const reloadOpenVault = useCallback(() => {
+		const generation = openGenerationRef.current;
+		void loadEntries(undefined, () => generation !== openGenerationRef.current).catch(() => {});
+	}, [loadEntries]);
+	useEffect(() => {
+		reloadAfterMergeRef.current = reloadOpenVault;
+	}, [reloadOpenVault]);
+	// biome-ignore lint/correctness/useExhaustiveDependencies: moves on when the open vault changes.
+	useEffect(() => {
+		openGenerationRef.current++;
+	}, [activeId]);
 
 	// After a successful unwrap: load, or lock again so nothing syncs a vault that didn't open.
 	const openUnlocked = useCallback(
@@ -851,6 +937,19 @@ export function VaultProvider({ children }: { children: ReactNode }) {
 		},
 		[loadEntries, crypto, shell],
 	);
+
+	/** Drop everything decrypted, in one piece, and show the vault locked. */
+	const closeOpenVault = useCallback(() => {
+		openGenerationRef.current++;
+		vaultStateRef.current = emptyVaultSyncState();
+		latestRef.current = { ...latestRef.current, entries: [] };
+		markLoaded(null);
+		setConflicts(NO_CONFLICTS);
+		setSyncedSettings(undefined);
+		setFiles([]);
+		setEntries([]);
+		setIsLocked(true);
+	}, [markLoaded]);
 
 	// On mount (and when the active vault resolves): detect an existing vault handle and
 	// whether crypto is already unlocked (popup reopened mid-session). Waits for the registry
@@ -879,8 +978,10 @@ export function VaultProvider({ children }: { children: ReactNode }) {
 
 				const locked = await crypto.isLocked();
 				if (cancelled) return;
-				setIsLocked(locked);
-				if (locked) return;
+				if (locked) {
+					closeOpenVault();
+					return;
+				}
 
 				try {
 					await loadEntries();
@@ -894,6 +995,16 @@ export function VaultProvider({ children }: { children: ReactNode }) {
 					if (!cancelled) setIsLocked(true);
 					return;
 				}
+				// Unlocked only now, as in every other unlock path: whatever mounts under an unlocked
+				// vault takes that to mean the vault is in memory. A lock that landed during the load
+				// wins, and takes what the load just decrypted with it.
+				const lockedSince = await crypto.isLocked();
+				if (cancelled) return;
+				if (lockedSince) {
+					closeOpenVault();
+					return;
+				}
+				setIsLocked(false);
 				// Session-resume: unlock() won't fire, so commit any parked handoff here.
 				void shell.flushPendingCornerCapture().catch(() => {});
 			} catch (e) {
@@ -915,6 +1026,7 @@ export function VaultProvider({ children }: { children: ReactNode }) {
 		vaults.length,
 		refreshRegistry,
 		activeId,
+		closeOpenVault,
 	]);
 
 	// Record which vault is unlocked so the background can target it for sync and a reopened popup
@@ -948,23 +1060,14 @@ export function VaultProvider({ children }: { children: ReactNode }) {
 	// Reflect a background-initiated lock (auto-lock alarm): drop decrypted state
 	// so the guard redirects to the unlock screen.
 	useEffect(() => {
-		return crypto.onExternalLock(() => {
-			vaultStateRef.current = emptyVaultSyncState();
-			setConflicts(NO_CONFLICTS);
-			setSyncedSettings(undefined);
-			setFiles([]);
-			setEntries([]);
-			setIsLocked(true);
-		});
-	}, [crypto]);
+		return crypto.onExternalLock(closeOpenVault);
+	}, [crypto, closeOpenVault]);
 
 	// Re-decrypt when the background commits a vault write (corner-prompt path)
 	// outside this context, keeping in-memory entries in sync with disk.
 	useEffect(() => {
-		return crypto.onExternalChange(() => {
-			void loadEntries().catch(() => {});
-		});
-	}, [crypto, loadEntries]);
+		return crypto.onExternalChange(reloadOpenVault);
+	}, [crypto, reloadOpenVault]);
 
 	/** Unlock with the master password, decrypt entries, and clear lock state. */
 	const unlock = useCallback(
@@ -1026,14 +1129,9 @@ export function VaultProvider({ children }: { children: ReactNode }) {
 			throw e;
 		}
 		await autofill.clearIndex();
-		vaultStateRef.current = emptyVaultSyncState();
-		setConflicts(NO_CONFLICTS);
-		setSyncedSettings(undefined);
-		setFiles([]);
-		setEntries([]);
-		setIsLocked(true);
+		closeOpenVault();
 		setLockedByUser(true);
-	}, [crypto, autofill]);
+	}, [crypto, autofill, closeOpenVault]);
 
 	/** Run a get() assertion over the given slots, returning the PRF secret. */
 	// Slot wrapping lives in vault/build-vault (shared with device enrollment); these
@@ -1069,7 +1167,30 @@ export function VaultProvider({ children }: { children: ReactNode }) {
 		[crypto, openUnlocked, shell, activeId, t],
 	);
 
-	/** Unlock via a registered security key (one tap, two if the salt mismatches). */
+	/** One tap from any registered key, under whichever rpID it lives. Unlock and re-auth share it. */
+	const tapAnyWebauthnKey = useCallback(
+		async (slots: WebauthnSlot[]) => {
+			// Platform keys and security keys live under different rpIDs and the vault file does not
+			// record which is which, so a mixed vault may need both tried. Order by what THIS vault
+			// holds: the labels pref is not vault-scoped, so reading it raw would let a platform key
+			// in another vault cost this one an extra prompt.
+			//
+			// Read the pref rather than the mounted state: the state loads asynchronously, so a window
+			// that unlocks the instant it opens (the Firefox pop-out handoff does exactly that) would
+			// see an empty map, assume no platform key, and try the wrong rpID first.
+			const storedLabels =
+				(await storage.getMeta<Record<string, StoredKeyLabel>>(WEBAUTHN_KEY_LABELS_PREF)) ?? {};
+			const hasPlatformKey = describeWebauthnKeys(slots, storedLabels, bytesToBase64).some(
+				(k) => k.kind === "platform",
+			);
+
+			// Slots carry their salts, so whichever key is tapped answers with its own: one prompt.
+			return getPrfSecretAcrossRpIds(slots, slots[0]!.salt, unlockRpIdOrder(hasPlatformKey));
+		},
+		[storage],
+	);
+
+	/** Unlock via a registered security key: one tap, whichever key it is. */
 	const unlockWithWebauthnKey = useCallback(async () => {
 		setError(null);
 		let slots: WebauthnSlot[];
@@ -1084,43 +1205,14 @@ export function VaultProvider({ children }: { children: ReactNode }) {
 			throw new Error(t`No security key registered on this vault.`);
 		}
 
-		// Platform keys and security keys live under different rpIDs and the vault file does not
-		// record which is which, so a mixed vault may need both tried. Order by what THIS vault
-		// holds: the labels pref is not vault-scoped, so reading it raw would let a platform key
-		// in another vault cost this one an extra prompt.
-		//
-		// Read the pref rather than the mounted state: the state loads asynchronously, so a window
-		// that unlocks the instant it opens (the Firefox pop-out handoff does exactly that) would
-		// see an empty map, assume no platform key, and try the wrong rpID first.
-		const storedLabels =
-			(await storage.getMeta<Record<string, StoredKeyLabel>>(WEBAUTHN_KEY_LABELS_PREF)) ?? {};
-		const hasPlatformKey = describeWebauthnKeys(slots, storedLabels, bytesToBase64).some(
-			(k) => k.kind === "platform",
-		);
-
-		// First tap uses slot[0]'s salt; if a different credential with a
-		// different salt is tapped, re-ask narrowed to it with its own salt.
-		const firstSalt = slots[0]!.salt;
-		const firstAttempt = await getPrfSecretAcrossRpIds(
-			slots,
-			firstSalt,
-			unlockRpIdOrder(hasPlatformKey),
-		);
-		const rpId = firstAttempt.rpId;
-		let used = matchSlotByCredentialId(slots, firstAttempt.rawId);
+		const attempt = await tapAnyWebauthnKey(slots);
+		const used = matchSlotByCredentialId(slots, attempt.rawId);
 		if (!used) {
 			throw new Error(t`Authenticator returned an unknown credential.`);
 		}
-		let hmacSecret = firstAttempt.hmacSecret;
-		if (needsSaltMismatchRetry(used, firstSalt)) {
-			const second = await getPrfSecret([used], used.salt, { rpId });
-			used = matchSlotByCredentialId([used], second.rawId);
-			if (!used) throw new Error(t`Authenticator returned an unknown credential.`);
-			hmacSecret = second.hmacSecret;
-		}
 
-		await finishWebauthnUnlock(used, hmacSecret);
-	}, [readDecodedBlob, finishWebauthnUnlock, storage, t]);
+		await finishWebauthnUnlock(used, attempt.hmacSecret);
+	}, [readDecodedBlob, finishWebauthnUnlock, tapAnyWebauthnKey, t]);
 
 	/**
 	 * Prove possession of a registered key (a tap) without touching lock state.
@@ -1131,12 +1223,12 @@ export function VaultProvider({ children }: { children: ReactNode }) {
 		const slots = findWebauthnSlots(blob);
 		if (slots.length === 0) return false;
 		try {
-			const attempt = await getPrfSecret(slots, slots[0]!.salt, { forUnlock: true });
+			const attempt = await tapAnyWebauthnKey(slots);
 			return matchSlotByCredentialId(slots, attempt.rawId) !== null;
 		} catch {
 			return false;
 		}
-	}, [readDecodedBlob]);
+	}, [readDecodedBlob, tapAnyWebauthnKey]);
 
 	/**
 	 * Register a new security key against the unlocked vault. Requires the vault
@@ -1237,7 +1329,13 @@ export function VaultProvider({ children }: { children: ReactNode }) {
 				emptyEntriesPayload(),
 			);
 			await storage.writeVaultBlob(bytes, newId);
-			vaultStateRef.current = emptyVaultSyncState();
+			vaultStateRef.current = {
+				...emptyVaultSyncState(),
+				...(bound.notifyExternalChange
+					? { diskSeen: decodeVaultBlob(bytes).entriesCiphertext }
+					: {}),
+			};
+			markLoaded(newId);
 			setConflicts(NO_CONFLICTS);
 			setSyncedSettings(undefined);
 			setFiles([]);
@@ -1248,7 +1346,7 @@ export function VaultProvider({ children }: { children: ReactNode }) {
 			// newly selected active id, reading via storage rebound to the new vault.
 			return code;
 		},
-		[vaults, createRecord, shell, storage, platformCrypto],
+		[vaults, createRecord, shell, storage, platformCrypto, markLoaded],
 	);
 
 	/** Download an encrypted backup of the vault as a `.bramble` file (the encrypted VLT1
@@ -1337,7 +1435,15 @@ export function VaultProvider({ children }: { children: ReactNode }) {
 	// each is a transition that persists and returns the next state, which we
 	// commit here. The shared persist primitives also back the sync-enrollment hook.
 	const mutations = useMemo(
-		() => createEntryMutations({ crypto, storage, autofill, readDecodedBlob, clock: ensureClock }),
+		() =>
+			createEntryMutations({
+				crypto,
+				storage,
+				autofill,
+				readDecodedBlob,
+				clock: ensureClock,
+				onDiskMerged: () => reloadAfterMergeRef.current(),
+			}),
 		[crypto, storage, autofill, readDecodedBlob, ensureClock],
 	);
 
@@ -1359,10 +1465,14 @@ export function VaultProvider({ children }: { children: ReactNode }) {
 
 	// Snapshot the current entry state (latest entries + the stamp/tombstone refs).
 	// Reads entries from latestRef so the callback stays stable across entry changes.
-	const snapshotEntries = useCallback(
-		(): VaultEntries => ({ entries: latestRef.current.entries, ...vaultStateRef.current }),
-		[],
-	);
+	const snapshotEntries = useCallback((): VaultEntries => {
+		// Refused rather than written: see loadedVaultRef. Nothing should get here, and if something
+		// does, the vault on disk is still whole.
+		if (loadedVaultRef.current !== vaultKey(latestRef.current.activeId)) {
+			throw new Error("the open vault has not finished loading");
+		}
+		return { entries: latestRef.current.entries, ...vaultStateRef.current };
+	}, []);
 
 	// Commit a mutation's next state. Only ever runs after a successful persist,
 	// so a failed write leaves entries + refs untouched.
@@ -1411,6 +1521,7 @@ export function VaultProvider({ children }: { children: ReactNode }) {
 		[vaultFiles],
 	);
 	const canOpenFiles = !!vaultFiles?.present;
+	const canSaveFiles = !!vaultFiles?.save;
 	const canPickFiles = !!vaultFiles?.pick;
 	const pickFile = useCallback(async (): Promise<PickedAttachment | null> => {
 		if (!vaultFiles?.pick) throw new Error("this platform has no file dialog of its own");
@@ -1420,6 +1531,13 @@ export function VaultProvider({ children }: { children: ReactNode }) {
 		async (record: FileRecord): Promise<void> => {
 			if (!vaultFiles?.present) throw new Error("this platform cannot open attachments");
 			await vaultFiles.present(record);
+		},
+		[vaultFiles],
+	);
+	const saveFile = useCallback(
+		async (record: FileRecord): Promise<boolean> => {
+			if (!vaultFiles?.save) throw new Error("this platform cannot save attachments");
+			return vaultFiles.save(record);
 		},
 		[vaultFiles],
 	);
@@ -1434,7 +1552,11 @@ export function VaultProvider({ children }: { children: ReactNode }) {
 	);
 
 	const importEntries = useCallback(
-		async (items: EntryData[], attachments: PlacedAttachment[] = []) => {
+		async (
+			items: EntryData[],
+			attachments: PlacedAttachment[] = [],
+			opts?: ImportOptions,
+		): Promise<string[]> => {
 			const files: ImportedFile[] = [];
 			const sealer = vaultFiles?.sealer;
 			for (const a of attachments) {
@@ -1446,7 +1568,8 @@ export function VaultProvider({ children }: { children: ReactNode }) {
 						: { sealed, entryId: a.onto.entryId },
 				);
 			}
-			commitEntries(await mutations.importMany(snapshotEntries(), items, files));
+			commitEntries(await mutations.importMany(snapshotEntries(), items, files, opts));
+			return files.map((f) => f.sealed.hash);
 		},
 		[mutations, snapshotEntries, commitEntries, vaultFiles],
 	);
@@ -1563,6 +1686,16 @@ export function VaultProvider({ children }: { children: ReactNode }) {
 		[mutations, snapshotEntries, commitEntries, readConflictVersions, t],
 	);
 	const readEntries = useCallback((): Entry[] => latestRef.current.entries, []);
+	const readSetting = useCallback(
+		(key: string): unknown => snapshotEntries().settings?.[key]?.value,
+		[snapshotEntries],
+	);
+	const writeSetting = useCallback(
+		async (key: string, value: unknown) => {
+			commitEntries(await mutations.setSetting(snapshotEntries(), key, value));
+		},
+		[mutations, snapshotEntries, commitEntries],
+	);
 
 	/** Check a password against the slot verifier without unlocking. */
 	const verifyMasterPassword = useCallback(
@@ -1669,12 +1802,16 @@ export function VaultProvider({ children }: { children: ReactNode }) {
 		if (await crypto.isLocked()) {
 			throw new Error(t`Unlock the vault before disabling the master password.`);
 		}
+		// Pairing needs the password, and a synced vault can pair again at any time.
+		if ((await storage.getMeta(syncKey("sync.group"))) != null) {
+			throw new Error(t`Disconnect this device from sync before turning off the master password.`);
+		}
 		const { blob } = await readDecodedBlob();
 		// Throws (invariant B) if no security key remains to unlock with.
 		const newBlob = removePasswordSlot(blob);
 		await storage.writeVaultBlob(encodeVaultBlob(newBlob));
 		await refreshSlotMetadata();
-	}, [crypto, readDecodedBlob, storage, refreshSlotMetadata, t]);
+	}, [crypto, readDecodedBlob, storage, syncKey, refreshSlotMetadata, t]);
 
 	/**
 	 * Rotate the vault's encryption key: everything is re-encrypted under a fresh one.
@@ -1968,6 +2105,7 @@ export function VaultProvider({ children }: { children: ReactNode }) {
 		code: string;
 		method: JoinUnlock;
 		targetId: string;
+		viaLink?: boolean;
 	} | null>(null);
 	const [joinError, setJoinError] = useState<string | null>(null);
 	const joinResolverRef = useRef<{ resolve: () => void; reject: (e: unknown) => void } | null>(
@@ -1975,7 +2113,7 @@ export function VaultProvider({ children }: { children: ReactNode }) {
 	);
 	const joinRunningRef = useRef(false);
 	// The in-flight startJoin promise, so a re-entrant call rides it instead of starting a second join.
-	const joinInFlightRef = useRef<Promise<void> | null>(null);
+	const joinInFlightRef = useRef<Promise<string> | null>(null);
 
 	// Re-entry guard. The dedup below only matches a PERSISTED sync.group, which an in-flight join
 	// hasn't written yet, so a second call would create a second registry record and overwrite
@@ -1983,7 +2121,12 @@ export function VaultProvider({ children }: { children: ReactNode }) {
 	// can only ever fire for the newest attempt. Assigned before the first await, so a double tap
 	// rides the in-flight join instead. See docs/multiple-vaults.md.
 	const startJoin = useCallback(
-		(pairingCode: string, method: JoinUnlock, label?: string): Promise<void> => {
+		(
+			pairingCode: string,
+			method: JoinUnlock,
+			label?: string,
+			opts?: { viaLink?: boolean },
+		): Promise<string> => {
 			if (joinInFlightRef.current) return joinInFlightRef.current;
 			const run = (async () => {
 				setJoinError(null);
@@ -1993,16 +2136,16 @@ export function VaultProvider({ children }: { children: ReactNode }) {
 					const g = await storage.getMeta<{ groupKey?: string }>(syncKeyFor("sync.group", v.id));
 					if (g?.groupKey === code.groupKey) {
 						selectVault(v.id);
-						return;
+						return v.id;
 					}
 				}
 				// Named by the caller where it knows what this vault IS. An unlabelled vault appearing
 				// mid-flow is how "connect a browser" read as the app swallowing the user's entries.
 				const newId = await createRecord(label);
 				await shell.setActiveVault?.(newId);
-				return new Promise<void>((resolve, reject) => {
-					joinResolverRef.current = { resolve, reject };
-					setPendingJoin({ code: pairingCode, method, targetId: newId });
+				return new Promise<string>((resolve, reject) => {
+					joinResolverRef.current = { resolve: () => resolve(newId), reject };
+					setPendingJoin({ code: pairingCode, method, targetId: newId, viaLink: opts?.viaLink });
 				});
 			})();
 			joinInFlightRef.current = run;
@@ -2026,10 +2169,10 @@ export function VaultProvider({ children }: { children: ReactNode }) {
 		)
 			return;
 		joinRunningRef.current = true;
-		const { code, method } = pendingJoin;
+		const { code, method, viaLink } = pendingJoin;
 		void (async () => {
 			try {
-				await joinGroup(code, method); // writes + unlocks the new active vault
+				await joinGroup(code, method, { viaLink }); // writes + unlocks the new active vault
 				setHasVault(true);
 				setPendingJoin(null);
 				joinResolverRef.current?.resolve();
@@ -2062,6 +2205,7 @@ export function VaultProvider({ children }: { children: ReactNode }) {
 			files,
 			canAttachFiles,
 			canOpenFiles,
+			canSaveFiles,
 			canPickFiles,
 			entries,
 			conflicts,
@@ -2088,6 +2232,7 @@ export function VaultProvider({ children }: { children: ReactNode }) {
 			files,
 			canAttachFiles,
 			canOpenFiles,
+			canSaveFiles,
 			canPickFiles,
 			entries,
 			conflicts,
@@ -2108,6 +2253,57 @@ export function VaultProvider({ children }: { children: ReactNode }) {
 
 	/** Delete the active vault after re-auth. The single in-app path that erases a vault's blob:
 	 * verification and deletion are inseparable here, so no caller can delete without re-authing. */
+	/**
+	 * Erase everything keyed to one vault: blob, files, keys and settings. Callers gate it:
+	 * deleteVault on a re-auth, deleteEmptyVault on the vault holding nothing.
+	 */
+	const eraseVaultData = useCallback(
+		async (id: string) => {
+			// The only place a vault's (encrypted) bytes are erased, gated on the re-auth above.
+			await storage.deleteVaultBlob(id).catch(() => {});
+			// Its attachments too: sealed, but they are this vault's contents, and a deleted vault
+			// must not leave copies of them behind.
+			await fileAdapter?.deleteVault(id).catch(() => {});
+			// Everything else keyed to this vault, or the blob is gone while copies of its
+			// contents and its key material live on. Each is best-effort: a native or storage
+			// failure here must not abort a delete whose bytes are already erased.
+			await biometric?.disable(id).catch(() => {});
+			await desktopLink?.forgetVault?.(id).catch(() => {});
+			for (const k of PER_VAULT_SYNC_KEYS) {
+				await storage.removeMeta(syncKeyFor(k, id)).catch(() => {});
+			}
+			// Its gate settings, alongside its sync keys. Vault ids are UUIDs and never reused, so
+			// these would only ever be dead weight rather than something a later vault could
+			// inherit - but a delete that leaves a vault's settings behind is the kind of gap the
+			// vault-scoping rule exists to close. See CONTEXT.md.
+			for (const k of PER_VAULT_PREF_KEYS) {
+				await storage.removeMeta(syncKeyFor(k, id)).catch(() => {});
+			}
+			// Its backup targets, and the credentials they name. The list itself is VEK-wrapped
+			// state that nothing can read once the vek is gone, but where the platform keeps
+			// credentials OUTSIDE the vault (the desktop's OS credential store) they are plaintext
+			// and would outlive the vault with no path left to reach them, because the list that
+			// named them is about to be deleted. So erase those first, then the list.
+			const doomed =
+				(await storage.getMeta<{ id: string }[]>(backupTargetsKeyFor(id)).catch(() => undefined)) ??
+				[];
+			for (const t of doomed) {
+				await backupCreds?.remove(id, t.id).catch(() => {});
+			}
+			await storage.removeMeta(backupTargetsKeyFor(id)).catch(() => {});
+			// Its alias provider, whose API key can spend the user's allowance at a third party and
+			// delete the aliases already made. VEK-wrapped, so it is unreadable the moment the blob
+			// above is gone, but the same rule applies as to the settings above: a delete leaves
+			// nothing of the vault behind.
+			// The configuration itself dies with the blob, since it is a synced setting inside it.
+			// These two are what live outside: the pre-sync key a migration may not have reached,
+			// and the device-local hint that a provider exists here.
+			await storage.removeMeta(aliasConfigKeyFor(id)).catch(() => {});
+			await storage.removeMeta(aliasConfiguredHintKeyFor(id)).catch(() => {});
+		},
+		[storage, biometric, backupCreds, fileAdapter, desktopLink],
+	);
+
 	const deleteVault = useCallback(
 		async (auth: DeleteVaultAuth): Promise<boolean> => {
 			const ok =
@@ -2116,48 +2312,8 @@ export function VaultProvider({ children }: { children: ReactNode }) {
 					: await verifyWithWebauthnKey();
 			if (!ok || !activeId) return false;
 			await lock();
-			// The only place a vault's (encrypted) bytes are erased, gated on the re-auth above.
-			await storage.deleteVaultBlob(activeId).catch(() => {});
-			// Its attachments too: sealed, but they are this vault's contents, and a deleted vault
-			// must not leave copies of them behind.
-			await fileAdapter?.deleteVault(activeId).catch(() => {});
-			// Everything else keyed to this vault, or the blob is gone while copies of its
-			// contents and its key material live on. Each is best-effort: a native or storage
-			// failure here must not abort a delete whose bytes are already erased.
 			await autofill.clearProviderData?.().catch(() => {});
-			await biometric?.disable(activeId).catch(() => {});
-			for (const k of PER_VAULT_SYNC_KEYS) {
-				await storage.removeMeta(syncKeyFor(k, activeId)).catch(() => {});
-			}
-			// Its gate settings, alongside its sync keys. Vault ids are UUIDs and never reused, so
-			// these would only ever be dead weight rather than something a later vault could
-			// inherit - but a delete that leaves a vault's settings behind is the kind of gap the
-			// vault-scoping rule exists to close. See CONTEXT.md.
-			for (const k of PER_VAULT_PREF_KEYS) {
-				await storage.removeMeta(syncKeyFor(k, activeId)).catch(() => {});
-			}
-			// Its backup targets, and the credentials they name. The list itself is VEK-wrapped
-			// state that nothing can read once the vek is gone, but where the platform keeps
-			// credentials OUTSIDE the vault (the desktop's OS credential store) they are plaintext
-			// and would outlive the vault with no path left to reach them, because the list that
-			// named them is about to be deleted. So erase those first, then the list.
-			const doomed =
-				(await storage
-					.getMeta<{ id: string }[]>(backupTargetsKeyFor(activeId))
-					.catch(() => undefined)) ?? [];
-			for (const t of doomed) {
-				await backupCreds?.remove(activeId, t.id).catch(() => {});
-			}
-			await storage.removeMeta(backupTargetsKeyFor(activeId)).catch(() => {});
-			// Its alias provider, whose API key can spend the user's allowance at a third party and
-			// delete the aliases already made. VEK-wrapped, so it is unreadable the moment the blob
-			// above is gone, but the same rule applies as to the settings above: a delete leaves
-			// nothing of the vault behind.
-			// The configuration itself dies with the blob, since it is a synced setting inside it.
-			// These two are what live outside: the pre-sync key a migration may not have reached,
-			// and the device-local hint that a provider exists here.
-			await storage.removeMeta(aliasConfigKeyFor(activeId)).catch(() => {});
-			await storage.removeMeta(aliasConfiguredHintKeyFor(activeId)).catch(() => {});
+			await eraseVaultData(activeId);
 			await dropActiveRecord();
 			// Clear the recorded active vault: it is sticky (the effect above only ever writes it),
 			// so after a delete it still named the vault we just erased. Mobile's sync resolves its
@@ -2171,15 +2327,60 @@ export function VaultProvider({ children }: { children: ReactNode }) {
 			verifyWithWebauthnKey,
 			activeId,
 			lock,
-			storage,
 			dropActiveRecord,
 			shell,
 			autofill,
-			biometric,
-			backupCreds,
-			fileAdapter,
+			eraseVaultData,
 		],
 	);
+
+	/**
+	 * Remove a vault linking left empty, once the desktop's vault has arrived. The one path that
+	 * removes a vault other than the open one, so it checks emptiness itself rather than trusting
+	 * the caller: `entryCount` is what the vault held when it was last open.
+	 */
+	const deleteEmptyVault = useCallback(
+		async (
+			id: string,
+			entryCount: number,
+			fileCount: number,
+			unchangedFrom?: Uint8Array,
+		): Promise<boolean> => {
+			if (id === activeId) return false;
+			if (!isVaultEmpty(await readVaultContents(storage, id, entryCount, fileCount))) return false;
+			if (unchangedFrom && !sameBytes(await storage.readVaultBlob(id), unchangedFrom)) return false;
+			await eraseVaultData(id);
+			await forgetEmptyRecord(id);
+			return true;
+		},
+		[activeId, storage, eraseVaultData, forgetEmptyRecord],
+	);
+
+	const readOpenVaultFromDisk = useCallback(async (): Promise<DiskVault> => {
+		const store = createEntriesBlobStore({ crypto, storage, readDecodedBlob });
+		const payload = await store.readEntriesPayload();
+		const plaintexts = await crypto.decryptEntries(
+			payload.entries.map(({ ciphertext, iv, wrappedDek, dekIv }) => ({
+				ciphertext,
+				iv,
+				wrappedDek,
+				dekIv,
+			})),
+		);
+		const entries: Entry[] = [];
+		payload.entries.forEach((enc, i) => {
+			const plaintext = plaintexts[i];
+			if (plaintext != null)
+				entries.push({ id: enc.id, ...normalizeEntryData(JSON.parse(plaintext)) });
+		});
+		return {
+			entries,
+			files: liveFiles(payload),
+			settings: payload.settings,
+			conflicted: conflictsOf(vaultEntriesFromPayload(payload, entries)).size,
+			unreadable: payload.entries.length - entries.length,
+		};
+	}, [crypto, storage, readDecodedBlob]);
 
 	// Every action is referentially stable (state reads route through latestRef), so this
 	// memo builds once: the actions value never changes and useVaultActions never re-renders.
@@ -2189,6 +2390,8 @@ export function VaultProvider({ children }: { children: ReactNode }) {
 			lock,
 			createVault,
 			deleteVault,
+			deleteEmptyVault,
+			readOpenVaultFromDisk,
 			exportVault,
 			exportKdbx,
 			exportToApp,
@@ -2197,6 +2400,7 @@ export function VaultProvider({ children }: { children: ReactNode }) {
 			renameFile,
 			describeFile,
 			openFile,
+			saveFile,
 			hasFile,
 			fileStatus,
 			pickFile,
@@ -2213,6 +2417,8 @@ export function VaultProvider({ children }: { children: ReactNode }) {
 			readConflictVersions,
 			resolveConflict,
 			readEntries,
+			readSetting,
+			writeSetting,
 			verifyMasterPassword,
 			verifyRecoveryCode,
 			verifyWithWebauthnKey,
@@ -2240,6 +2446,8 @@ export function VaultProvider({ children }: { children: ReactNode }) {
 			lock,
 			createVault,
 			deleteVault,
+			deleteEmptyVault,
+			readOpenVaultFromDisk,
 			exportVault,
 			exportKdbx,
 			exportToApp,
@@ -2248,6 +2456,7 @@ export function VaultProvider({ children }: { children: ReactNode }) {
 			renameFile,
 			describeFile,
 			openFile,
+			saveFile,
 			hasFile,
 			fileStatus,
 			pickFile,
@@ -2264,6 +2473,8 @@ export function VaultProvider({ children }: { children: ReactNode }) {
 			readConflictVersions,
 			resolveConflict,
 			readEntries,
+			readSetting,
+			writeSetting,
 			verifyMasterPassword,
 			verifyRecoveryCode,
 			verifyWithWebauthnKey,
@@ -2310,11 +2521,12 @@ export function VaultProvider({ children }: { children: ReactNode }) {
 	const syncedAccess = useMemo<SyncedSettingsAccess>(
 		() => ({
 			settings: syncedSettings,
-			ready: !isLocked,
-			set: async (key, value) =>
-				commitEntries(await mutations.setSetting(snapshotEntries(), key, value)),
+			// Not just unlocked: linking from Settings opens another vault under an unlocked screen,
+			// and until it has loaded, the settings in hand are still the last vault's.
+			ready: !isLocked && loadedVault === vaultKey(activeId),
+			set: writeSetting,
 		}),
-		[syncedSettings, isLocked, mutations, snapshotEntries, commitEntries],
+		[syncedSettings, isLocked, loadedVault, activeId, writeSetting],
 	);
 
 	return (

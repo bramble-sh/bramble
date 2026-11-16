@@ -139,7 +139,9 @@ Note: the code references the `browser`-incompatible `chrome.*` namespace throug
   fallback at `corner-prompt.ts:350`.
 - **`chrome.idle` / `chrome.commands`**: optional-chained in `background.ts`. The idle `"locked"`
   state used to lock on OS screen-lock is Chrome-only; on Firefox that listener just never fires
-  and the sliding auto-lock alarm remains the safety net.
+  and the sliding auto-lock alarm remains the safety net. Firefox's `ext-idle.js` emits only
+  `"idle"` and `"active"`, so the "Lock when the screen locks" switch is hidden there
+  (`lockOnScreenLock` in `packages/core/src/flags.ts`).
 - **CSP** `script-src 'self' 'wasm-unsafe-eval'`: supported by Firefox MV3.
 
 ## The offscreen document (core change)
@@ -439,6 +441,11 @@ Verified Firefox facts behind these choices:
   URL rotation is lost. Confirm with `web-ext lint`. Note the Chromium subtlety it caused: with the
   flag on, `runtime.getURL()` returns a GUID origin the loaded document does not share, so the
   picker's bridge pins the origin from the iframe's READY handshake instead (see docs/autofill.md).
+- **An extension frame embedded in a web page gets a reduced API** (checked on Firefox 160):
+  `runtime`, `i18n` and `storage.local` are there, `tabs` and `storage.session` are not. Chromium
+  gives the same frame `tabs` as well. So the save card's Username frame reaches its card through a
+  background relay rather than `tabs.sendMessage` (see docs/autofill.md, "Typing on the card").
+  Page CSP and COEP do not keep such a frame out on Firefox; COEP does on Chromium.
 
 ## Build tooling
 
