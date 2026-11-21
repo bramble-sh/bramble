@@ -62,7 +62,7 @@ jobs:
       # For the build script and the version check. Everything that builds runs in the container,
       # with no cache from anywhere: the bytes come from this checkout and the pinned image alone.
       - name: Setup Node
-        uses: actions/setup-node@v7
+        uses: actions/setup-node@v7.1.0
         with:
           node-version: 24
           package-manager-cache: false
