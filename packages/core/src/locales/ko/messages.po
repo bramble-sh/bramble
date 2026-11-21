@@ -3405,6 +3405,10 @@ msgid "Settings sections"
 msgstr "설정 섹션"
 
 #: packages/core/src/app/screens/Settings/components/GeneralSection.tsx
+msgid "Shortcut only"
+msgstr "단축키만"
+
+#: packages/core/src/app/screens/Settings/components/GeneralSection.tsx
 msgid "Show a save / update card in the corner of the page when you sign in with credentials Vault doesn't have."
 msgstr "보관함에 없는 자격 증명으로 로그인할 때 페이지 모서리에 저장/업데이트 카드를 표시합니다."
 
@@ -4665,3 +4669,44 @@ msgstr "보관함이 비어 있습니다. 첫 번째 항목을 추가하십시�
 #: packages/core/src/app/screens/Auth/Auth.tsx
 msgid "Your vault stays on this device, encrypted with AES-256-GCM. Keep your master password and recovery code somewhere safe."
 msgstr "보관함은 이 기기에 AES-256-GCM으로 암호화된 상태로 보관됩니다. 마스터 비밀번호와 복구 코드를 안전한 곳에 보관하십시오."
+
+
+#: packages/core/src/app/screens/Settings/components/GeneralSection.tsx
+msgid "When you click a login field"
+msgstr "When you click a login field"
+
+#: packages/core/src/app/screens/Settings/components/GeneralSection.tsx
+msgid "Show"
+msgstr "Show"
+
+#: packages/core/src/app/screens/Settings/components/GeneralSection.tsx
+msgid "Bramble icon"
+msgstr "Bramble icon"
+
+#: packages/core/src/app/screens/Settings/components/GeneralSection.tsx
+msgid "Open on focus"
+msgstr "Open on focus"
+
+#: packages/core/src/app/screens/Settings/components/GeneralSection.tsx
+msgid "Cycle logins with the keyboard"
+msgstr "Cycle logins with the keyboard"
+
+#: packages/core/src/app/screens/Settings/components/GeneralSection.tsx
+msgid "Saved logins open as soon as you click into a field."
+msgstr "Saved logins open as soon as you click into a field."
+
+#: packages/core/src/app/screens/Settings/components/GeneralSection.tsx
+msgid "Nothing is drawn on the page. Use the keyboard shortcut to fill a login."
+msgstr "Nothing is drawn on the page. Use the keyboard shortcut to fill a login."
+
+#: packages/core/src/app/screens/Settings/components/GeneralSection.tsx
+msgid "A small Bramble mark appears in the field. Click it to see saved logins, or type a username to see it completed."
+msgstr "A small Bramble mark appears in the field. Click it to see saved logins, or type a username to see it completed."
+
+#: packages/core/src/app/screens/Settings/components/GeneralSection.tsx
+msgid "No shortcut is set. Set one in your browser's extension shortcuts."
+msgstr "No shortcut is set. Set one in your browser's extension shortcuts."
+
+#: packages/core/src/app/screens/Settings/components/GeneralSection.tsx
+msgid "Press {autofillShortcut} in a login field to fill the next saved login."
+msgstr "Press {autofillShortcut} in a login field to fill the next saved login."

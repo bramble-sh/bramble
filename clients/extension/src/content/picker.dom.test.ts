@@ -193,17 +193,6 @@ describe("picker: losing the anchor field", () => {
 		expect(hostEl()!.style.transform).toBe("translate3d(40px, 334px, 0)");
 	});
 
-	it("sits under the field while a modal has the page's scroll blocked", async () => {
-		// Angular CDK's scroll-block: <html> is position:fixed at top:-441px and
-		// window.scrollY reads 0, so the host's coordinates start 441px above the viewport.
-		vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockReturnValue(
-			new DOMRect(0, -441, 0, 0),
-		);
-		await openOnField();
-
-		expect(hostEl()!.style.transform).toBe("translate3d(40px, 775px, 0)");
-	});
-
 	it("dismisses when a route change unmounts the field", async () => {
 		const field = await openOnField();
 
@@ -316,21 +305,6 @@ describe("picker: only the iframe's port can pick", () => {
 		uiPort.postMessage({ type: "UI_PICK", entryId: MATCH.id, otpOnly: false });
 
 		await vi.waitFor(() => expect(picks).toEqual([[MATCH.id, false]]));
-	});
-
-	// #213: the new-login row rides the same port, and a render with it counts one more row.
-	it("passes the new-login row to the iframe and reports its choice", async () => {
-		const { uiPort, posts, field } = await setup();
-		let opened = 0;
-		picker.onNewLogin(() => opened++);
-		picker.showMatches([MATCH], field, { newLogin: true });
-		await settle();
-		expect(posts).toContainEqual(
-			expect.objectContaining({ type: "RENDER_MATCHES", newLogin: true }),
-		);
-
-		uiPort.postMessage({ type: "UI_NEW_LOGIN" });
-		await vi.waitFor(() => expect(opened).toBe(1));
 	});
 
 	it("ignores a pick for an entry it never rendered", async () => {

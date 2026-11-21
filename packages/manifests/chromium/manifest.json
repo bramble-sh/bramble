@@ -52,6 +52,15 @@
 		},
 		"lock-vault": {
 			"description": "__MSG_cmdLockVault__"
+		},
+		"autofill-cycle": {
+			"description": "__MSG_cmdAutofillCycle__",
+			"suggested_key": {
+				"default": "Alt+Shift+L"
+			}
+		},
+		"autofill-cycle-back": {
+			"description": "__MSG_cmdAutofillCycleBack__"
 		}
 	},
 	"content_security_policy": {

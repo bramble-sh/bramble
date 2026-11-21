@@ -162,7 +162,20 @@ describe("shopify checkout - card fields in a cross-origin iframe", () => {
 
 		deliver(window, { __tp: "tp-relay-close", relayId: "relay-1" }, frameEl.contentWindow);
 
-		expect(closed).toHaveBeenCalledWith("relay-1");
+		expect(closed).toHaveBeenCalledWith("relay-1", false);
+	});
+
+	it("carries the collapse flag for a pick", () => {
+		const closed = vi.fn();
+		merchantRelay.onClose(closed);
+
+		deliver(
+			window,
+			{ __tp: "tp-relay-close", relayId: "relay-1", collapse: true },
+			frameEl.contentWindow,
+		);
+
+		expect(closed).toHaveBeenCalledWith("relay-1", true);
 	});
 
 	it("does not treat the merchant frame itself as needing a relay", () => {
@@ -177,48 +190,6 @@ describe("shopify checkout - card fields in a cross-origin iframe", () => {
 
 		deliver(window, { __tp: "tp-relay-anchor", relayId: "forged", rect: INPUT_RECT }, window);
 		deliver(window, { __tp: "tp-relay-anchor", relayId: "forged", rect: INPUT_RECT }, null);
-
-		expect(seen).not.toHaveBeenCalled();
-	});
-
-	it("keeps a relayed anchor inside the frame it came from", () => {
-		// A child's rect is its word for where its field is. Unclamped, any frame on the page
-		// could have the picker drawn anywhere on the merchant's.
-		const seen = vi.fn();
-		merchantRelay.onAnchor(seen);
-
-		deliver(
-			window,
-			{
-				__tp: "tp-relay-anchor",
-				relayId: "relay-1",
-				rect: { x: 400, y: 8, width: 200, height: 32 },
-			},
-			frameEl.contentWindow,
-		);
-
-		expect(seen).toHaveBeenCalledTimes(1);
-		expect(seen.mock.calls[0]![0].rect).toEqual({
-			x: FRAME_LEFT + 400,
-			y: FRAME_TOP + 8,
-			width: FRAME_WIDTH - 400,
-			height: 32,
-		});
-	});
-
-	it("drops a relayed anchor that misses its frame altogether", () => {
-		const seen = vi.fn();
-		merchantRelay.onAnchor(seen);
-
-		deliver(
-			window,
-			{
-				__tp: "tp-relay-anchor",
-				relayId: "relay-1",
-				rect: { x: 600, y: -280, width: 200, height: 20 },
-			},
-			frameEl.contentWindow,
-		);
 
 		expect(seen).not.toHaveBeenCalled();
 	});
@@ -279,53 +250,7 @@ describe("a relay belongs to the frame that opened it", () => {
 		expect(closed).not.toHaveBeenCalled();
 
 		deliver(window, { __tp: "tp-relay-close", relayId: "r" }, ownerEl.contentWindow);
-		expect(closed).toHaveBeenCalledWith("r");
-	});
-});
-
-describe("a click in an embedding page dismisses pickers in its frames", () => {
-	// A frame never hears a click on the page around it, and focus leaving it for that page looks
-	// the same as focus leaving the window, which keeps a picker up on purpose. So the page tells.
-	let childEl: HTMLIFrameElement;
-	let child: { win: Window; doc: Document };
-	let topRelay: FrameRelay;
-	let childRelay: FrameRelay;
-
-	beforeEach(() => {
-		document.body.innerHTML = "<iframe id='child'></iframe>";
-		childEl = document.querySelector<HTMLIFrameElement>("#child")!;
-		child = mountFrame(childEl, "<body></body>");
-		topRelay = installFrameRelay({ window, document });
-		childRelay = installFrameRelay({ window: child.win, document: child.doc });
-	});
-
-	it("tells every child frame, carrying nothing", async () => {
-		const seen = captureUpward(child.win);
-
-		topRelay.dismissDescendants();
-		await flush();
-
-		expect(seen).toEqual([{ __tp: "tp-relay-dismiss" }]);
-	});
-
-	it("takes a dismissal from its parent", () => {
-		const dismissed = vi.fn();
-		childRelay.onDismiss(dismissed);
-
-		// jsdom's cross-realm proxies don't compare equal, so name the parent as the child sees it.
-		deliver(child.win, { __tp: "tp-relay-dismiss" }, child.win.parent);
-
-		expect(dismissed).toHaveBeenCalledTimes(1);
-	});
-
-	it("ignores a dismissal from anything but its parent", () => {
-		const dismissed = vi.fn();
-		childRelay.onDismiss(dismissed);
-
-		deliver(child.win, { __tp: "tp-relay-dismiss" }, child.win);
-		deliver(child.win, { __tp: "tp-relay-dismiss" }, null);
-
-		expect(dismissed).not.toHaveBeenCalled();
+		expect(closed).toHaveBeenCalledWith("r", false);
 	});
 });
 

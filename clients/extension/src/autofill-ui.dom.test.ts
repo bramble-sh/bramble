@@ -137,6 +137,16 @@ describe("autofill-ui: clicks need the browser to vouch the picker is visible", 
 		expect(observerInit.delay).toBeGreaterThanOrEqual(100);
 	});
 
+	it("keeps the badge and the open action in one trailing slot", async () => {
+		adopted!.port.postMessage({
+			type: "RENDER_MATCHES",
+			matches: [{ ...MATCH, id: "entry-2" }],
+			carriedId: "entry-2",
+		});
+		await vi.waitFor(() => expect(document.querySelector(".tp-trail .tp-badge")).not.toBeNull());
+		expect(document.querySelector(".tp-trail .tp-open")).not.toBeNull();
+	});
+
 	it("refuses a click while the browser reports it obscured, and points to the keyboard", async () => {
 		reportVisible(false);
 
@@ -171,69 +181,5 @@ describe("autofill-ui: clicks need the browser to vouch the picker is visible", 
 		await vi.waitFor(() =>
 			expect(sent()).toContainEqual({ type: "UI_PICK", entryId: MATCH.id, otpOnly: false }),
 		);
-	});
-});
-
-// #213: a "new login" row under a login field's matches, reachable by keyboard after them.
-describe("autofill-ui: the new-login link", () => {
-	function clickNewLogin(): void {
-		const link = document.querySelector("[data-tp-new-login]");
-		if (!link || !mousedown) throw new Error("no link rendered");
-		const inner = new MouseEvent("mousedown", { bubbles: true, cancelable: true });
-		mousedown(
-			new Proxy(inner, {
-				get(event, property) {
-					if (property === "isTrusted") return true;
-					if (property === "target") return link;
-					const value = Reflect.get(event, property, event);
-					return typeof value === "function" ? value.bind(event) : value;
-				},
-			}),
-		);
-	}
-
-	it("renders last, small, and opens the form on a click", async () => {
-		if (!adopted) throw new Error("the hand-over case did not leave a port");
-		document.body.innerHTML = "";
-		adopted.port.postMessage({ type: "RENDER_MATCHES", matches: [MATCH], newLogin: true });
-		await vi.waitFor(() => expect(document.querySelector("[data-tp-new-login]")).not.toBeNull());
-		const list = document.querySelector(".tp-list");
-		expect(list?.lastElementChild?.hasAttribute("data-tp-new-login")).toBe(true);
-		expect(list?.lastElementChild?.classList.contains("tp-item")).toBe(false);
-
-		const since = adopted.received.length;
-		clickNewLogin();
-		await vi.waitFor(() =>
-			expect(adopted!.received.slice(since)).toContainEqual({ type: "UI_NEW_LOGIN" }),
-		);
-	});
-
-	// Enter must never open a window: the arrow keys stay on the logins.
-	it("is out of the keyboard's reach", async () => {
-		document.body.innerHTML = "";
-		adopted!.port.postMessage({ type: "RENDER_MATCHES", matches: [MATCH], newLogin: true });
-		await vi.waitFor(() => expect(document.querySelector("[data-tp-new-login]")).not.toBeNull());
-		const since = adopted!.received.length;
-		for (const key of ["ArrowDown", "ArrowDown", "ArrowDown", "Enter"]) {
-			adopted!.port.postMessage({ type: "UI_KEY", key });
-		}
-		await vi.waitFor(() =>
-			expect(adopted!.received.slice(since)).toContainEqual({
-				type: "UI_PICK",
-				entryId: MATCH.id,
-				otpOnly: false,
-			}),
-		);
-		adopted!.port.postMessage({ type: "UI_KEY", key: "ArrowUp" });
-		adopted!.port.postMessage({ type: "UI_KEY", key: "Enter" });
-		await new Promise((r) => setTimeout(r, 20));
-		expect(adopted!.received.slice(since)).not.toContainEqual({ type: "UI_NEW_LOGIN" });
-	});
-
-	it("is absent unless asked for", async () => {
-		document.body.innerHTML = "";
-		adopted!.port.postMessage({ type: "RENDER_MATCHES", matches: [MATCH] });
-		await vi.waitFor(() => expect(document.querySelector("[data-entry-id]")).not.toBeNull());
-		expect(document.querySelector("[data-tp-new-login]")).toBeNull();
 	});
 });

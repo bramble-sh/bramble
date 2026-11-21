@@ -18,6 +18,11 @@ import { DEFAULT_SEARCH, isSortKey, type SortKey } from "../app/screens/VaultHom
 import { usePlatform } from "../context/PlatformContext";
 import { syncKeyFor } from "../sync/sync-keys";
 import {
+	type AutofillTrigger,
+	DEFAULT_AUTOFILL_TRIGGER,
+	normalizeAutofillTrigger,
+} from "../util/autofill-trigger";
+import {
 	DEFAULT_GENERATOR_SETTINGS,
 	type GeneratorSettings,
 	normalizeGeneratorSettings,
@@ -34,6 +39,22 @@ export const PREF_OFFER_TO_SAVE = "pref.offerToSave";
 // Extension only: the master switch for page autofill. Off hides the in-page dropdown entirely
 // (matches, the "Vault locked" row, and the generated-password suggestion) and refuses fills.
 export const PREF_AUTOFILL_ENABLED = "pref.autofillEnabled";
+// Extension only: what clicking into a login field does. "icon" (the default) shows a small
+// Bramble mark inside the field and leaves the list closed until it is clicked; "focus" opens the
+// list on focus as older builds did; "shortcut" draws nothing and leaves filling to the browser
+// command. Device-scoped: the background reads it while the vault is locked.
+export const PREF_AUTOFILL_TRIGGER = "pref.autofillTrigger";
+// Extension only: the one-time "what is this mark?" hint has been shown. Device-scoped: one
+// install, not one vault.
+export const PREF_AUTOFILL_ICON_HINT = "pref.autofillIconHintSeen";
+// The mode type, its default and its validator live in one shared module so the background and
+// the content script read the same definition rather than declaring their own copies.
+export {
+	type AutofillTrigger,
+	DEFAULT_AUTOFILL_TRIGGER,
+	isAutofillTrigger,
+	normalizeAutofillTrigger,
+} from "../util/autofill-trigger";
 export const PREF_NEVER_SAVE_SITES = "pref.neverSaveSites";
 // Mobile only: present the biometric gate as soon as the unlock screen is up, rather than
 // waiting for a tap. Off by default; see docs/auth-and-unlock.md (issue #43).
@@ -112,6 +133,10 @@ export interface Prefs {
 	offerToSave: boolean;
 	// Extension: show the in-page autofill dropdown at all.
 	autofillEnabled: boolean;
+	// Extension: what opens the in-page list (focus, inline icon, or the keyboard shortcut).
+	autofillTrigger: AutofillTrigger;
+	// Extension: the one-time "what is this mark?" hint has been shown.
+	autofillIconHintSeen: boolean;
 	// eTLD+1 hostnames muted via "Never for this site".
 	neverSaveSites: string[];
 	// Mobile: fire the biometric prompt when the unlock screen appears, with no tap.
@@ -153,6 +178,8 @@ const META_KEYS: Record<keyof Prefs, string> = {
 	clipboardClearSeconds: PREF_CLIPBOARD_SECONDS,
 	offerToSave: PREF_OFFER_TO_SAVE,
 	autofillEnabled: PREF_AUTOFILL_ENABLED,
+	autofillTrigger: PREF_AUTOFILL_TRIGGER,
+	autofillIconHintSeen: PREF_AUTOFILL_ICON_HINT,
 	neverSaveSites: PREF_NEVER_SAVE_SITES,
 	biometricAutoPrompt: PREF_BIOMETRIC_AUTO_PROMPT,
 	biometricPasscodeFallback: PREF_BIOMETRIC_PASSCODE_FALLBACK,
@@ -200,6 +227,8 @@ const PREF_SCOPE: Record<keyof Prefs, PrefScope> = {
 	clipboardClearSeconds: "device",
 	offerToSave: "device",
 	autofillEnabled: "device",
+	autofillTrigger: "device",
+	autofillIconHintSeen: "device",
 	neverSaveSites: "device",
 	biometricAutoPrompt: "vault",
 	autofillQuickType: "device",
@@ -266,6 +295,8 @@ const DEFAULT_PREFS: Prefs = {
 	clipboardClearSeconds: DEFAULT_CLIPBOARD_SECONDS,
 	offerToSave: DEFAULT_OFFER_TO_SAVE,
 	autofillEnabled: DEFAULT_AUTOFILL_ENABLED,
+	autofillTrigger: DEFAULT_AUTOFILL_TRIGGER,
+	autofillIconHintSeen: false,
 	neverSaveSites: DEFAULT_NEVER_SAVE_SITES,
 	biometricAutoPrompt: DEFAULT_BIOMETRIC_AUTO_PROMPT,
 	biometricPasscodeFallback: DEFAULT_BIOMETRIC_PASSCODE_FALLBACK,
@@ -383,7 +414,7 @@ export function PrefsProvider({ children }: { children: ReactNode }) {
 		}));
 		void (async () => {
 			if (retireLegacy) await retireLegacyFlatPrefs(storage);
-			const [a, b, c, d, e, f, g, h, i, j, k, l, m, n, o, p, q, r, s, u] = await Promise.all([
+			const [a, b, c, d, e, f, g, h, i, j, k, l, m, n, o, p, q, r, s, u, v] = await Promise.all([
 				storage.getMeta<number>(PREF_AUTOLOCK_MINUTES),
 				storage.getMeta<boolean>(PREF_BREACH_CHECK),
 				storage.getMeta<number>(PREF_CLIPBOARD_SECONDS),
@@ -414,6 +445,7 @@ export function PrefsProvider({ children }: { children: ReactNode }) {
 				storage.getMeta<boolean>(PREF_UPDATE_CHECK),
 				storage.getMeta<unknown>(PREF_APP_UPDATE),
 				storage.getMeta<unknown>(PREF_VAULT_SORT),
+				storage.getMeta<unknown>(PREF_AUTOFILL_TRIGGER),
 			]);
 			if (cancelled) return;
 			// One `now` for the read: a fresh install's clock starts here rather than at whichever
@@ -429,6 +461,7 @@ export function PrefsProvider({ children }: { children: ReactNode }) {
 				clipboardClearSeconds: typeof c === "number" ? c : DEFAULT_CLIPBOARD_SECONDS,
 				offerToSave: typeof d === "boolean" ? d : DEFAULT_OFFER_TO_SAVE,
 				autofillEnabled: typeof e === "boolean" ? e : DEFAULT_AUTOFILL_ENABLED,
+				autofillTrigger: normalizeAutofillTrigger(v),
 				neverSaveSites: Array.isArray(f) ? f : DEFAULT_NEVER_SAVE_SITES,
 				biometricAutoPrompt: typeof g === "boolean" ? g : DEFAULT_BIOMETRIC_AUTO_PROMPT,
 				autofillQuickType: typeof h === "boolean" ? h : DEFAULT_AUTOFILL_QUICKTYPE,

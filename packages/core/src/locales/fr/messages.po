@@ -3738,6 +3738,10 @@ msgid "Settings sections"
 msgstr "Sections des paramètres"
 
 #: packages/core/src/app/screens/Settings/components/GeneralSection.tsx
+msgid "Shortcut only"
+msgstr "Raccourci uniquement"
+
+#: packages/core/src/app/screens/Settings/components/GeneralSection.tsx
 msgid "Show a save / update card in the corner of the page when you sign in with credentials Vault doesn't have."
 msgstr "Afficher une carte de sauvegarde ou de mise à jour dans le coin de la page lors de la connexion si les identifiants du coffre-fort n'incluent pas cette information."
 
@@ -5135,3 +5139,44 @@ msgstr "Votre coffre-fort est vide. Ajoutez votre premier élément."
 #: packages/core/src/app/screens/Auth/Auth.tsx
 msgid "Your vault stays on this device, encrypted with AES-256-GCM. Keep your master password and recovery code somewhere safe."
 msgstr "Votre coffre reste sur cet appareil, chiffré avec AES-256-GCM. Gardez votre mot de passe maître et le code de récupération en lieu sûr."
+
+
+#: packages/core/src/app/screens/Settings/components/GeneralSection.tsx
+msgid "When you click a login field"
+msgstr "Lorsque vous cliquez sur un champ de connexion"
+
+#: packages/core/src/app/screens/Settings/components/GeneralSection.tsx
+msgid "Show"
+msgstr "Afficher"
+
+#: packages/core/src/app/screens/Settings/components/GeneralSection.tsx
+msgid "Bramble icon"
+msgstr "Icône Bramble"
+
+#: packages/core/src/app/screens/Settings/components/GeneralSection.tsx
+msgid "Open on focus"
+msgstr "Ouvrir au focus"
+
+#: packages/core/src/app/screens/Settings/components/GeneralSection.tsx
+msgid "Cycle logins with the keyboard"
+msgstr "Parcourir les connexions au clavier"
+
+#: packages/core/src/app/screens/Settings/components/GeneralSection.tsx
+msgid "Saved logins open as soon as you click into a field."
+msgstr "Les connexions enregistrées s'ouvrent dès que vous cliquez dans un champ."
+
+#: packages/core/src/app/screens/Settings/components/GeneralSection.tsx
+msgid "Nothing is drawn on the page. Use the keyboard shortcut to fill a login."
+msgstr "Rien n'est affiché sur la page. Utilisez le raccourci clavier pour remplir une connexion."
+
+#: packages/core/src/app/screens/Settings/components/GeneralSection.tsx
+msgid "A small Bramble mark appears in the field. Click it to see saved logins, or type a username to see it completed."
+msgstr "Une petite marque Bramble apparaît dans le champ. Cliquez dessus pour voir les connexions enregistrées, ou tapez un nom d'utilisateur pour le voir complété."
+
+#: packages/core/src/app/screens/Settings/components/GeneralSection.tsx
+msgid "No shortcut is set. Set one in your browser's extension shortcuts."
+msgstr "Aucun raccourci n'est défini. Définissez-en un dans les raccourcis d'extensions de votre navigateur."
+
+#: packages/core/src/app/screens/Settings/components/GeneralSection.tsx
+msgid "Press {autofillShortcut} in a login field to fill the next saved login."
+msgstr "Appuyez sur {autofillShortcut} dans un champ de connexion pour remplir la connexion enregistrée suivante."
