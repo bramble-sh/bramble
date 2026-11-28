@@ -1,0 +1,384 @@
+---
+/**
+ * The hero's mailbox announcement, drawn as an airmail letter: striped border, a stamp of a
+ * mailbox with a bramble round its post, and a postmark that lands once the letter has.
+ */
+import ArrowRight from "@tabler/icons/outline/arrow-right.svg";
+
+interface Props {
+	href: string;
+}
+
+const { href } = Astro.props;
+
+// The stamp's perforations: holes along each edge of a 56 x 68 stamp at (24, 3).
+const STAMP = { x: 24, y: 3, w: 56, h: 68 };
+const holes = [
+	...Array.from({ length: 11 }, (_, i) => [STAMP.x + (i * STAMP.w) / 10, STAMP.y]),
+	...Array.from({ length: 11 }, (_, i) => [STAMP.x + (i * STAMP.w) / 10, STAMP.y + STAMP.h]),
+	...Array.from({ length: 11 }, (_, i) => [STAMP.x, STAMP.y + ((i + 1) * STAMP.h) / 12]),
+	...Array.from({ length: 11 }, (_, i) => [STAMP.x + STAMP.w, STAMP.y + ((i + 1) * STAMP.h) / 12]),
+];
+
+// Blackberries: a few drupelets each.
+const berry = (cx: number, cy: number) =>
+	[
+		[0, 0],
+		[1.3, 0.2],
+		[-1.2, 0.3],
+		[0.1, 1.2],
+		[0.2, -1.1],
+		[1.1, 1.1],
+		[-1, 1.1],
+	].map(([dx, dy]) => [cx + (dx ?? 0), cy + (dy ?? 0)]);
+---
+
+<a href={href} class="mailbox-letter group">
+	<span class="mailbox-letter-text">
+		<span class="mailbox-letter-title"><slot name="title" /><span class="sr-only">:</span></span>
+		<span class="mailbox-letter-line">
+			<slot />
+			<ArrowRight class="mailbox-letter-arrow" aria-hidden="true" />
+		</span>
+	</span>
+
+	<svg class="mailbox-letter-waves" viewBox="0 0 44 28" aria-hidden="true">
+		<g class="mailbox-letter-ink" filter="url(#mbx-ink)">
+			{[5, 11, 17, 23].map((y) => (
+				<path d={`M1 ${y} q2.75 -2.6 5.5 0 t5.5 0 t5.5 0 t5.5 0 t5.5 0 t5.5 0 t5.5 0`} />
+			))}
+		</g>
+	</svg>
+
+	<svg class="mailbox-letter-marks" viewBox="0 0 84 76" aria-hidden="true">
+		<defs>
+			<mask id="mbx-perforations">
+				<rect x={STAMP.x - 3} y={STAMP.y - 3} width={STAMP.w + 6} height={STAMP.h + 6} fill="white" />
+				{holes.map(([cx, cy]) => <circle cx={cx} cy={cy} r="1.7" fill="black" />)}
+			</mask>
+			<filter id="mbx-shadow" x="-20%" y="-20%" width="140%" height="140%">
+				<feDropShadow dx="0.4" dy="0.9" stdDeviation="0.7" flood-color="#1d1d1b" flood-opacity="0.28" />
+			</filter>
+			{/* Rubber-stamp ink: wobbly edges, patchy coverage. */}
+			<filter id="mbx-ink" x="-10%" y="-10%" width="120%" height="120%">
+				<feTurbulence type="fractalNoise" baseFrequency="1.1" numOctaves="2" seed="7" result="noise" />
+				<feDisplacementMap in="SourceGraphic" in2="noise" scale="0.9" result="wobble" />
+				<feColorMatrix
+					in="noise"
+					type="matrix"
+					values="0 0 0 0 0  0 0 0 0 0  0 0 0 0 0  0 0 0 -1.5 1.65"
+					result="patches"
+				/>
+				<feComposite in="wobble" in2="patches" operator="in" />
+			</filter>
+			<path id="mbx-ring" d="M20 61 a12.4 12.4 0 1 1 0.01 0" />
+		</defs>
+
+		{/* The stamp. */}
+		<g class="mailbox-letter-stamp" filter="url(#mbx-shadow)">
+			<rect
+				x={STAMP.x - 1.7}
+				y={STAMP.y - 1.7}
+				width={STAMP.w + 3.4}
+				height={STAMP.h + 3.4}
+				fill="#fdfaf2"
+				mask="url(#mbx-perforations)"
+			/>
+		</g>
+		<g>
+			<rect x="28.5" y="7.5" width="47" height="59" fill="#e4ebf6" />
+			<path d="M28.5 57.5 Q40 53.5 52 56.5 T75.5 55 V66.5 H28.5 Z" fill="#c3d1ea" />
+
+			{/* The sun is Bramble's ring. */}
+			<circle cx="37" cy="16" r="4.2" fill="#22468f" />
+			<circle cx="37" cy="16" r="2.5" fill="none" stroke="#e4ebf6" stroke-width="0.9" />
+			<text x="72" y="17.5" text-anchor="end" font-size="8" font-weight="700" fill="#22468f">$2</text>
+
+			{/* Post, then the bramble climbing it. */}
+			<rect x="50.5" y="37" width="3" height="21" fill="#22468f" />
+			<path
+				d="M51 58.5 C46 56 57 53 52 50 S47 44.5 52.5 41.5 S56.5 38 54 36.5"
+				fill="none"
+				stroke="#3f6b3a"
+				stroke-width="0.9"
+				stroke-linecap="round"
+			/>
+			{[
+				[48.2, 54.6, -35],
+				[55.6, 52.4, 30],
+				[48.4, 45.6, -50],
+				[56, 40.6, 40],
+			].map(([x, y, a]) => (
+				<ellipse cx={x} cy={y} rx="2.1" ry="1.05" fill="#4f7d3f" transform={`rotate(${a} ${x} ${y})`} />
+			))}
+			{[...berry(46.2, 51.2), ...berry(57.4, 46)].map(([cx, cy]) => (
+				<circle cx={cx} cy={cy} r="0.75" fill="#3a1d45" />
+			))}
+
+			{/* Mailbox, flag up: there's mail. */}
+			<path d="M36 37.5 V30 Q36 24.5 41.5 24.5 H62 Q67.5 24.5 67.5 30 V37.5 Z" fill="#22468f" />
+			<path d="M39.2 26 V37.5" stroke="#e4ebf6" stroke-width="0.6" />
+			<g class="mailbox-letter-flag">
+				<rect x="63.6" y="18" width="1.4" height="14" fill="#d33a2c" />
+				<path d="M65 18 h6.4 v4.6 h-6.4 Z" fill="#d33a2c" />
+			</g>
+			<g transform="rotate(-14 34 31)">
+				<rect x="30.5" y="28.4" width="8.6" height="5.6" fill="#fffdf8" stroke="#22468f" stroke-width="0.5" />
+				<path d="M30.5 28.4 l4.3 3 l4.3 -3" fill="none" stroke="#22468f" stroke-width="0.5" />
+			</g>
+			<text
+				x="52"
+				y="64.2"
+				text-anchor="middle"
+				font-size="4.4"
+				font-weight="700"
+				letter-spacing="0.9"
+				fill="#22468f">BRAMBLE</text
+			>
+		</g>
+
+		{/* The postmark, over the stamp's corner. */}
+		<g class="mailbox-letter-postmark mailbox-letter-ink" filter="url(#mbx-ink)">
+			<circle cx="20" cy="48.6" r="16" fill="none" stroke-width="1.1" />
+			<circle cx="20" cy="48.6" r="9.6" fill="none" stroke-width="0.7" />
+			<text font-size="4.1" font-weight="700" letter-spacing="0.3">
+				<textPath href="#mbx-ring" textLength="74" lengthAdjust="spacing">BRAMBLE · MAILBOX · BRAMBLE.SH ·</textPath>
+			</text>
+			<text x="20" y="51.3" text-anchor="middle" font-size="7.4" font-weight="800">NEW</text>
+		</g>
+	</svg>
+</a>
+
+<style>
+	.mailbox-letter {
+		--paper: #fffdf8;
+		--ink: #1f2a44;
+		--airmail-red: #d33a2c;
+		--airmail-blue: #22468f;
+		position: relative;
+		display: inline-flex;
+		max-width: 100%;
+		align-items: center;
+		gap: 0.25rem;
+		padding: 0.25rem 0.5rem 0.25rem 1.25rem;
+		border: 6px solid transparent;
+		border-radius: 6px;
+		color: #1d1d1b;
+		text-align: left;
+		/* Airmail stripes: a square tile of 45-degree bands repeats seamlessly, so sliding it one
+		   tile along is a loop. */
+		background:
+			linear-gradient(var(--paper), var(--paper)) padding-box,
+			linear-gradient(
+					45deg,
+					var(--airmail-red) 0 17%,
+					var(--paper) 17% 25%,
+					var(--airmail-blue) 25% 42%,
+					var(--paper) 42% 50%,
+					var(--airmail-red) 50% 67%,
+					var(--paper) 67% 75%,
+					var(--airmail-blue) 75% 92%,
+					var(--paper) 92%
+				)
+				0 0 / 28px 28px border-box;
+		box-shadow:
+			0 1px 2px rgb(0 0 0 / 0.08),
+			0 8px 24px -10px rgb(0 0 0 / 0.3);
+		transform: rotate(-1.5deg);
+		transition:
+			transform 0.25s ease,
+			box-shadow 0.25s ease;
+		/* Backwards only: holding the last frame would pin the transform and stop the hover lift. */
+		animation:
+			mailbox-letter-arrive 0.8s cubic-bezier(0.2, 0.9, 0.3, 1.15) backwards,
+			mailbox-letter-thud 0.22s ease-out 0.86s,
+			mailbox-letter-stripes 2.4s linear infinite;
+	}
+
+	:global(.dark) .mailbox-letter {
+		--paper: #f3eee3;
+		box-shadow:
+			0 1px 2px rgb(0 0 0 / 0.4),
+			0 10px 30px -8px rgb(0 0 0 / 0.7);
+	}
+
+	.mailbox-letter:hover {
+		transform: rotate(0deg) translateY(-3px);
+		box-shadow:
+			0 2px 4px rgb(0 0 0 / 0.1),
+			0 16px 32px -12px rgb(0 0 0 / 0.4);
+	}
+
+	.mailbox-letter:focus-visible {
+		outline-offset: 4px;
+	}
+
+	.mailbox-letter-text {
+		display: flex;
+		min-width: 0;
+		flex-direction: column;
+		gap: 0.125rem;
+	}
+
+	.mailbox-letter-title {
+		font-size: 1.125rem;
+		font-weight: 650;
+		letter-spacing: -0.01em;
+	}
+
+	.mailbox-letter-line {
+		font-size: 0.875rem;
+		color: #57534e;
+		text-wrap: pretty;
+	}
+
+	.mailbox-letter-arrow {
+		display: inline-block;
+		width: 1rem;
+		height: 1rem;
+		margin-left: 0.25rem;
+		vertical-align: -0.2em;
+		transition: transform 0.2s ease;
+	}
+
+	.mailbox-letter:hover .mailbox-letter-arrow {
+		transform: translateX(3px);
+	}
+
+	.mailbox-letter-waves {
+		display: none;
+		width: 52px;
+		height: 33px;
+		flex-shrink: 0;
+		margin: 2rem -0.625rem 0 1rem;
+	}
+
+	.mailbox-letter-marks {
+		width: 92px;
+		height: 84px;
+		flex-shrink: 0;
+		overflow: visible;
+	}
+
+	@media (min-width: 640px) {
+		.mailbox-letter {
+			padding-right: 0.75rem;
+		}
+		.mailbox-letter-waves {
+			display: block;
+		}
+	}
+
+	.mailbox-letter-ink {
+		fill: var(--ink);
+		stroke: var(--ink);
+		stroke-width: 1.3;
+		fill-opacity: 0.9;
+		stroke-opacity: 0.85;
+	}
+
+	.mailbox-letter-ink path {
+		fill: none;
+	}
+
+	.mailbox-letter-ink text {
+		stroke: none;
+	}
+
+	/* The postmark comes down hard once the letter has landed. */
+	.mailbox-letter-postmark,
+	.mailbox-letter-waves g {
+		transform-box: fill-box;
+		transform-origin: center;
+		animation: mailbox-letter-postmark 1.4s ease-out both;
+	}
+
+	.mailbox-letter-postmark {
+		rotate: -14deg;
+	}
+
+	.mailbox-letter-flag {
+		transform-box: fill-box;
+		transform-origin: 0% 100%;
+	}
+
+	.mailbox-letter:hover .mailbox-letter-flag {
+		animation: mailbox-letter-flag 0.5s ease-in-out 2;
+	}
+
+	@keyframes mailbox-letter-arrive {
+		from {
+			opacity: 0;
+			transform: translate(-48px, -28px) rotate(-12deg);
+		}
+		to {
+			opacity: 1;
+			transform: rotate(-1.5deg);
+		}
+	}
+
+	/* The postmark's impact, through the letter. */
+	@keyframes mailbox-letter-thud {
+		40% {
+			scale: 0.985;
+			translate: 0 1px;
+		}
+	}
+
+	@keyframes mailbox-letter-stripes {
+		to {
+			background-position:
+				0 0,
+				28px 0;
+		}
+	}
+
+	@keyframes mailbox-letter-postmark {
+		0%,
+		55% {
+			opacity: 0;
+			scale: 1.9;
+		}
+		68% {
+			opacity: 1;
+			scale: 0.94;
+		}
+		80% {
+			scale: 1.02;
+		}
+		100% {
+			opacity: 1;
+			scale: 1;
+		}
+	}
+
+	@keyframes mailbox-letter-flag {
+		50% {
+			rotate: -18deg;
+		}
+	}
+
+	@media (prefers-reduced-motion: reduce) {
+		.mailbox-letter,
+		.mailbox-letter-postmark,
+		.mailbox-letter-waves g,
+		.mailbox-letter:hover .mailbox-letter-flag {
+			animation: none;
+		}
+		.mailbox-letter,
+		.mailbox-letter:hover {
+			transition: none;
+		}
+	}
+
+	@media (forced-colors: active) {
+		.mailbox-letter {
+			border-color: LinkText;
+			background: Canvas;
+			color: LinkText;
+		}
+		.mailbox-letter-line {
+			color: LinkText;
+		}
+	}
+</style>

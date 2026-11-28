@@ -42,10 +42,15 @@ import {
 import DownloadBox from "@/components/DownloadBox.astro";
 import Footer from "@/components/Footer.astro";
 import Header from "@/components/Header.astro";
+import MailboxLetter from "@/components/MailboxLetter.astro";
 import Newsletter from "@/components/Newsletter.astro";
 import ScreenshotGallery from "@/components/ScreenshotGallery.astro";
 import { LINKS, SITE } from "@/consts";
 import Layout from "@/layouts/Layout.astro";
+import { getPosts } from "@/posts";
+
+// Announced once its post is out, which waits for the release on every app.
+const mailboxPost = (await getPosts()).find((post) => post.id === "the-mailbox");
 
 const trust = [
     "No account",
@@ -102,7 +107,7 @@ const faqs: { q: string; a: string; link?: { href: string; label: string } }[] =
     [
         {
             q: "Is Bramble really free?",
-            a: "Yes. Bramble is free and open source. There is no paid tier, no subscription, and no account to create.",
+            a: "Yes. Bramble is free and open source, sync between your devices included, with no account to create. The one thing for sale is Bramble's optional mailbox, at $2 a month, which supports the project and pays for security audits. You can also run your own for free.",
             link: { href: "/donate", label: "Donations keep it going." },
         },
         {
@@ -115,7 +120,8 @@ const faqs: { q: string; a: string; link?: { href: string; label: string } }[] =
         },
         {
             q: "Does anything get sent to your servers?",
-            a: "By default, nothing. Two optional features make network connections when you turn them on: the breach check (which sends only a partial password hash via k-anonymity) and device sync (whose signaling relay only helps your devices connect and never receives your vault, passwords, or keys).",
+            a: "By default, only an update check in the desktop and mobile apps, which you can turn off. Three optional features reach servers we run or chose, once you turn them on: the breach check (which sends only a partial password hash via k-anonymity), device sync (whose signaling relay only helps your devices connect and never receives your vault, passwords, or keys), and Bramble's mailbox (which holds encrypted changes it can't read until your other devices collect them).",
+            link: { href: "/privacy", label: "The privacy policy has the details." },
         },
         {
             q: "How does sync work without a cloud?",
@@ -127,7 +133,7 @@ const faqs: { q: string; a: string; link?: { href: string; label: string } }[] =
         },
         {
             q: "Do my devices need to be online at the same time?",
-            a: "Not with a mailbox. A mailbox, Bramble's for $2 a month or one you run yourself, holds your encrypted changes until your other devices collect them, and can't read them. Without one, two devices sync when both are online and unlocked, so leave the desktop app running in your tray and your other devices always have something to sync with.",
+            a: "Not with a mailbox. A mailbox, Bramble's for $2 a month or one you run yourself, holds your encrypted changes until your other devices collect them, and can't read them. That's sync as seamless as a cloud service's, without a cloud keeping your vault. Without one, two devices sync when both are online and unlocked, so leave the desktop app running in your tray and your other devices always have something to sync with.",
         },
         {
             q: "Is it open source?",
@@ -153,10 +159,17 @@ const faqs: { q: string; a: string; link?: { href: string; label: string } }[] =
         <section class="relative flex min-h-[calc(100svh-4rem)] items-center overflow-hidden">
             <div class="pointer-events-none absolute inset-0 -z-10 bg-[radial-gradient(60%_50%_at_50%_0%,var(--muted)_0%,transparent_70%)]"></div>
             <div class="mx-auto w-full max-w-6xl px-4 py-8 text-center sm:px-6 sm:py-10">
-                <div class="mx-auto mb-5 flex w-fit items-center gap-2">
-                    <Badge variant="outline" size="md">
-                        Peer-to-peer password manager
-                    </Badge>
+                <div class="mx-auto mb-5 flex w-fit max-w-full items-center gap-2">
+                    {mailboxPost ? (
+                        <MailboxLetter href={`/blog/${mailboxPost.id}`}>
+                            <Fragment slot="title">Bramble Mailbox</Fragment>
+                            Sync like the cloud, without the cloud keeping your vault.
+                        </MailboxLetter>
+                    ) : (
+                        <Badge variant="outline" size="md">
+                            Peer-to-peer password manager
+                        </Badge>
+                    )}
                 </div>
                 <h1 class="mx-auto max-w-4xl text-4xl font-semibold tracking-tight text-balance sm:text-5xl">
                     <span class="block">Your passwords on all your devices.</span>{" "}

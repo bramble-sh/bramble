@@ -111,7 +111,7 @@ Bramble flips that around:
 - **No server to breach.** Your vault never leaves your control. No central pile of data for anyone to go after.
 - **No account, no subscription, no telemetry.** Nothing to sign up for. The only thing the apps ask on their own is whether there's an update.
 - **You own your data.** It lives on your devices, syncs between them, and exports to an encrypted file whenever you want an offline copy. Keep it off the internet entirely if you like. Your call.
-- **Cloud-like convenience, without a readable cloud copy.** Sync keeps every device up to date automatically, like a cloud manager would, but your vault is only ever stored on your devices, plus any encrypted backups you choose to make. Anything a relay passes along is end-to-end encrypted, so there's no central honeypot and no company that can read it.
+- **Cloud-like convenience, without a readable cloud copy.** Sync keeps every device up to date automatically, like a cloud manager would, and with a mailbox it does so even for devices that are never online together. Your vault is still only ever stored on your devices, plus any encrypted backups you choose to make: a mailbox holds encrypted changes only until your devices collect them. Anything a relay or mailbox passes along is end-to-end encrypted, so there's no central honeypot and no company that can read it.
 - **Nothing to trust but the code.** The crypto is open and runs entirely on your device. You're not taking anyone's word that the server "can't read your data."
 
 The tradeoff is real and worth being honest about: there's no "I forgot my password" button on a server somewhere. But you're not without a safety net: every vault gets a recovery code, and you can register a hardware key as another way in. Save the recovery code, keep a second device synced, and export a backup now and then. Lose *all* of your ways in (password, key, and recovery code) and the vault is gone, because nobody else holds a copy.
@@ -194,7 +194,7 @@ PRs that add real-site autofill fixtures or import-format coverage are especiall
 
 ## Support
 
-Bramble is free and open source. If it's useful to you, a tip is hugely appreciated. 💜 Scan a code with your wallet, or copy an address below.
+Bramble is free and open source. If it's useful to you, a tip is hugely appreciated. 💜 Scan a code with your wallet, or copy an address below. Time on [Bramble's mailbox](https://bramble.sh/account) supports the project too, and pays for security audits.
 
 | Monero (XMR) | Bitcoin · Lightning | Bitcoin · on-chain |
 |:---:|:---:|:---:|

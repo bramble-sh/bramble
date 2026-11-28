@@ -1,6 +1,6 @@
 ---
 title: "The mailbox: sync for devices that are never on at the same time"
-description: "Bramble's devices sync directly with each other, which means two of them have to be online together. The mailbox holds your encrypted changes in between, so a phone and a laptop that never overlap still stay in step."
+description: "Bramble's devices sync directly with each other, which means two of them have to be online together. The mailbox holds your encrypted changes in between, so sync works as smoothly as a cloud service's, without a cloud keeping your vault."
 pubDate: 2026-11-24
 since: "605dc73e"
 ---
@@ -18,6 +18,11 @@ The mailbox closes that gap. Each device leaves its changes there, and the other
 next time they are unlocked, whether or not anything else is online.
 
 ## A mailbox, not a cloud
+
+With a mailbox, Bramble syncs as smoothly as a cloud password manager: change a password on your
+phone, and your laptop has it the next time you open it. What it leaves out is the risk. A cloud
+service keeps your whole vault on its servers for as long as you use it, where a breach or a court
+order can reach it. We never keep a copy of your vault.
 
 The mailbox holds changes in transit and nothing else. Each change is encrypted on your device
 before it is sent, and the mailbox deletes it as soon as every one of your devices has collected
@@ -41,9 +46,9 @@ Or run your own. The mailbox server is open source, under the AGPL, and runs on 
 everything it stores in one folder. Point Bramble at it under **Settings → Sync → Mailbox →
 Advanced**, and it costs nothing.
 
-Sync between your devices stays free, as it always has. The mailbox costs money because storing and
-serving other people's data does, and charging for it keeps that cost off everyone who never uses
-it.
+Sync between your devices stays free, as it always has. We made the mailbox as a way to support
+Bramble: what it earns keeps the project going and pays for security audits. Charging for it also
+keeps the cost of storing and serving other people's data off everyone who never uses it.
 
 ## An account with nothing to leak
 
