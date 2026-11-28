@@ -1,6 +1,6 @@
 Bramble é um gerenciador de senhas gratuito e de código aberto que mantém seus segredos em seus próprios dispositivos. Sem conta, sem servidor da empresa no qual você precise confiar seu cofre e sem banco de dados central para ser violado e vazar tudo. Você detém o cofre, você detém a senha, e é só isso.
 
-Funciona no Chrome, Edge, Brave, Arc e em outros navegadores baseados no Chromium. Instale-o e você estará usando em cerca de um minuto. O Bramble também tem aplicativos para macOS, Linux, iOS e Android, e seu cofre sincroniza entre todos eles.
+Funciona no Chrome, Edge, Brave, Arc e em outros navegadores baseados no Chromium. Instale-o e você estará usando em cerca de um minuto. O Bramble também tem aplicativos para macOS, Windows, Linux, iOS e Android, e seu cofre sincroniza entre todos eles.
 
 O QUE ELE FAZ
 

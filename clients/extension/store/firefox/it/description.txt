@@ -1,6 +1,6 @@
 Bramble è un gestore di password gratuito e open source che conserva i segreti sui dispositivi dell'utente. Nessun account, nessun server aziendale a cui affidare la propria cassaforte e nessun database centrale che possa essere violato e far trapelare tutto. Lei custodisce la cassaforte e custodisce la password: tutto qui.
 
-Funziona in Firefox, LibreWolf, Waterfox, Zen e altri browser basati su Firefox. Basta installarlo e in circa un minuto è operativo. Bramble offre anche app per macOS, Linux, iOS e Android e la sua cassaforte si sincronizza tra loro.
+Funziona in Firefox, LibreWolf, Waterfox, Zen e altri browser basati su Firefox. Basta installarlo e in circa un minuto è operativo. Bramble offre anche app per macOS, Windows, Linux, iOS e Android e la sua cassaforte si sincronizza tra loro.
 
 COSA FA
 

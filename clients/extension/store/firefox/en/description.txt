@@ -1,6 +1,6 @@
 Bramble is a free, open source password manager that keeps your secrets on your own devices. No account, no company server you have to trust with your vault, and no central database to get breached and leak everything. You hold the vault, you hold the password, and that's it.
 
-Works in Firefox, LibreWolf, Waterfox, Zen and other Firefox browsers. Install it and you're running in about a minute. Bramble also has apps for macOS, Linux, iOS and Android, and your vault syncs between all of them.
+Works in Firefox, LibreWolf, Waterfox, Zen and other Firefox browsers. Install it and you're running in about a minute. Bramble also has apps for macOS, Windows, Linux, iOS and Android, and your vault syncs between all of them.
 
 WHAT IT DOES
 

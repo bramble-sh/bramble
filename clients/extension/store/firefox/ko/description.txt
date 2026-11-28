@@ -1,6 +1,6 @@
 Bramble은 사용자의 비밀을 자신의 기기에서만 보관하는 무료 오픈 소스 비밀번호 관리자입니다. 계정도, 볼트를 맡겨야 할 회사 서버도, 침해되어 모든 것을 유출시킬 중앙 데이터베이스도 없습니다. 볼트는 사용자가, 비밀번호는 사용자가 보관합니다. 그게 전부입니다.
 
-Firefox, LibreWolf, Waterfox, Zen 및 기타 Firefox 기반 브라우저에서 작동합니다. 설치하면 약 1분 안에 사용을 시작할 수 있습니다. Bramble은 macOS, Linux, iOS, Android용 앱도 제공하며, 볼트는 모든 기기 간에 동기화됩니다.
+Firefox, LibreWolf, Waterfox, Zen 및 기타 Firefox 기반 브라우저에서 작동합니다. 설치하면 약 1분 안에 사용을 시작할 수 있습니다. Bramble은 macOS, Windows, Linux, iOS, Android용 앱도 제공하며, 볼트는 모든 기기 간에 동기화됩니다.
 
 하는 일
 

@@ -1,6 +1,6 @@
 Bramble est un gestionnaire de mots de passe gratuit et open source qui conserve vos secrets sur vos propres appareils. Pas de compte, pas de serveur d'entreprise auquel vous devez confier votre coffre-fort, et pas de base de données centrale susceptible d'être piratée et de tout divulguer. Vous détenez le coffre-fort, vous détenez le mot de passe, et c'est tout.
 
-Fonctionne dans Firefox, LibreWolf, Waterfox, Zen et d'autres navigateurs basés sur Firefox. Installez-le et vous êtes opérationnel en une minute environ. Bramble propose également des applications pour macOS, Linux, iOS et Android, et votre coffre-fort se synchronise entre tous ces appareils.
+Fonctionne dans Firefox, LibreWolf, Waterfox, Zen et d'autres navigateurs basés sur Firefox. Installez-le et vous êtes opérationnel en une minute environ. Bramble propose également des applications pour macOS, Windows, Linux, iOS et Android, et votre coffre-fort se synchronise entre tous ces appareils.
 
 CE QU'IL FAIT
 

@@ -1,6 +1,6 @@
 Bramble es un gestor de contraseñas gratuito y de código abierto que guarda sus secretos en sus propios dispositivos. Sin cuenta, sin servidor de empresa al que deba confiarle su bóveda y sin base de datos central que pueda sufrir una filtración y filtrarlo todo. Usted conserva la bóveda, conserva la contraseña y eso es todo.
 
-Funciona en Firefox, LibreWolf, Waterfox, Zen y otros navegadores basados en Firefox. Instálelo y estará funcionando en aproximadamente un minuto. Bramble también tiene aplicaciones para macOS, Linux, iOS y Android, y su bóveda se sincroniza entre todas ellas.
+Funciona en Firefox, LibreWolf, Waterfox, Zen y otros navegadores basados en Firefox. Instálelo y estará funcionando en aproximadamente un minuto. Bramble también tiene aplicaciones para macOS, Windows, Linux, iOS y Android, y su bóveda se sincroniza entre todas ellas.
 
 QUÉ HACE
 

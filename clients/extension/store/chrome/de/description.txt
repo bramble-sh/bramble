@@ -1,6 +1,6 @@
 Bramble ist ein kostenloser Open-Source-Passwortmanager, der Ihre Geheimnisse auf Ihren eigenen Geräten aufbewahrt. Kein Konto, kein Unternehmensserver, dem Sie Ihren Tresor anvertrauen müssen, und keine zentrale Datenbank, die gehackt werden und alles preisgeben kann. Sie haben den Tresor, Sie haben das Passwort, das ist alles.
 
-Läuft in Chrome, Edge, Brave, Arc und anderen Chromium-Browsern. Installieren Sie die Erweiterung, und in etwa einer Minute sind Sie startklar. Bramble bietet außerdem Apps für macOS, Linux, iOS und Android, und Ihr Tresor wird zwischen allen Geräten synchronisiert.
+Läuft in Chrome, Edge, Brave, Arc und anderen Chromium-Browsern. Installieren Sie die Erweiterung, und in etwa einer Minute sind Sie startklar. Bramble bietet außerdem Apps für macOS, Windows, Linux, iOS und Android, und Ihr Tresor wird zwischen allen Geräten synchronisiert.
 
 DAS LEISTET BRAMBLE
 
