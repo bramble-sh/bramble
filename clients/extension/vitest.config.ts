@@ -12,6 +12,11 @@ export default defineConfig({
 	test: {
 		environment: "node",
 		include: ["src/**/*.test.ts"],
+		// CI runs about five times slower than a Mac, which put tests that take under a second here
+		// (one loads the whole background, one writes megabytes to IndexedDB) past the 5s default
+		// and stopped a release. As in clients/desktop/vitest.config.ts.
+		testTimeout: 20_000,
+		hookTimeout: 20_000,
 		// Resets the detection helpers' shadow-DOM memo between cases; see the file.
 		setupFiles: ["src/test/setup-dom.ts"],
 		// jsdom loads no external resources and runs no scripts by default, so

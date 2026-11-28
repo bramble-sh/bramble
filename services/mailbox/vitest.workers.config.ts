@@ -21,6 +21,10 @@ export default defineConfig(async () => {
 		test: {
 			include: ["src/worker/**/*.test.ts"],
 			setupFiles: ["./src/worker/setup.ts"],
+			// CI runs about five times slower than a Mac: 150 signed posts in a row take under 2s here
+			// and ran past the 5s default there, which stopped a release.
+			testTimeout: 20_000,
+			hookTimeout: 20_000,
 		},
 	};
 });
