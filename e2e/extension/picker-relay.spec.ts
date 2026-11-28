@@ -734,3 +734,56 @@ test("a sign-in form in a same-site frame is hosted by the top frame", async ({
 	await expect(login().locator("#user")).toHaveValue("alice@example.com", { timeout: 15_000 });
 	await expect(login().locator("#pass")).toHaveValue("s3cr3t-pw-01");
 });
+
+test("Ctrl+Enter opens the relayed highlighted row instead of filling", async ({
+	context,
+	extensionId,
+}) => {
+	await setUp(context, extensionId);
+	const page = await context.newPage();
+	await serve(page);
+	await page.goto(`${MERCHANT}/`);
+
+	const ui = await openPicker(page);
+	await page.keyboard.press("ArrowDown");
+	await expect(ui.locator("[data-entry-id]")).toHaveClass(/tp-active/, { timeout: 10_000 });
+
+	// The secondary action crosses the relay too: it opens the entry, and the card stays empty.
+	const opened = context.waitForEvent("page");
+	await page.keyboard.press("Control+Enter");
+	const details = await opened;
+	await expect(details).toHaveURL(/popup\.html\?detached=1/);
+	await expect(cardFrame(page).locator("#number")).toHaveValue("");
+});
+
+test("the card mark reopens the relayed picker after a pick", async ({ context, extensionId }) => {
+	const popup = await context.newPage();
+	await createVault(popup, extensionId);
+	await openPopup(popup, extensionId);
+	await seedExampleCard(popup);
+	await popup.evaluate(() => chrome.storage.local.set({ "pref.autofillTrigger": "icon" }));
+	await popup.close();
+
+	const page = await context.newPage();
+	await serve(page);
+	await page.goto(`${MERCHANT}/`);
+	const field = cardFrame(page).locator("#number");
+	const box = (await field.boundingBox())!;
+	const clickMark = () => page.mouse.click(box.x + box.width - 43, box.y + box.height / 2);
+	await clickMark();
+	await expect(async () => {
+		expect(uiFrame(page)).toBeDefined();
+	}).toPass({ timeout: 25_000 });
+	const ui = uiFrame(page)!;
+	await expect(ui.locator("[data-entry-id]")).toBeVisible({ timeout: 15_000 });
+	await waitOutPickerClickGuard(page);
+	await ui.locator("[data-entry-id]").click();
+	await expect(field).toHaveValue("4242424242424242", { timeout: 15_000 });
+	await expect.poll(() => hostCount(page), { timeout: 10_000 }).toBe(0);
+
+	await clickMark();
+	await expect(async () => {
+		expect(uiFrame(page)).toBeDefined();
+	}).toPass({ timeout: 25_000 });
+	await expect(uiFrame(page)!.locator("[data-entry-id]")).toBeVisible({ timeout: 15_000 });
+});

@@ -433,6 +433,14 @@ msgstr "O código de segurança possui 3 ou 4 dígitos."
 msgid "A server you're connected to with ssh -A wants to see and use your keys until Bramble locks."
 msgstr "Um servidor ao qual você está conectado via ssh -A quer ver e usar suas chaves até o Bramble bloquear."
 
+#: packages/core/src/app/screens/Settings/components/GeneralSection.tsx
+msgid ""
+"A small Bramble mark appears in the field. Click it to see saved logins, or "
+"type a username to see it completed."
+msgstr ""
+"Uma pequena marca do Bramble aparece no campo. Clique nela para ver os "
+"logins salvos ou digite um nome de usuário para vê-lo completado."
+
 #: packages/core/src/app/screens/Settings/components/MailboxSection.tsx
 msgid "A token is at least 16 letters, digits, dashes or underscores"
 msgstr "Um token deve ter pelo menos 16 letras, dígitos, hífens ou sublinhados"
@@ -1000,6 +1008,10 @@ msgstr "O Bramble não suporta o tamanho ou as configurações dela."
 msgid "Bramble hit an unexpected error. Your vault is safe — it stays encrypted on this device. Try reloading; if it keeps happening, reopen the app."
 msgstr "O Bramble encontrou um erro inesperado. Seu cofre está seguro — ele permanece criptografado neste dispositivo. Tente recarregar; se o problema persistir, reabra o aplicativo."
 
+#: packages/core/src/app/screens/Settings/components/GeneralSection.tsx
+msgid "Bramble icon"
+msgstr "Ícone do Bramble"
+
 #: packages/core/src/app/screens/Settings/components/SupportSection.tsx
 msgid "Bramble is free and open source. If it's useful to you, a tip helps keep it going. Scan a code with your wallet, or copy the address. Thank you."
 msgstr "O Bramble é gratuito e de código aberto. Se for útil para você, uma contribuição ajuda a mantê-lo ativo. Escaneie um código com sua carteira ou copie o endereço. Obrigado."
@@ -1337,6 +1349,19 @@ msgstr "Os códigos têm vida curta intencionalmente. Gere um novo quando o outr
 msgid "Combine into one"
 msgstr "Combinar em um"
 
+#: packages/core/src/app/screens/Settings/components/GeneralSection.tsx
+msgid "Comfortable"
+msgstr "Confortável"
+
+#: packages/core/src/app/screens/Settings/components/GeneralSection.tsx
+msgid ""
+"Comfortable gives each saved login the full row for its title, so a long name "
+"stays readable, with the username on the next line. Compact fits more rows."
+msgstr ""
+"Confortável dá a cada login salvo a linha inteira para o título, para que um "
+"nome longo continue legível, com o nome de usuário na linha seguinte. "
+"Compacto cabe mais linhas."
+
 #: packages/core/src/app/screens/Settings/components/BackupSection.tsx
 msgid "Coming soon"
 msgstr "Em breve"
@@ -1344,6 +1369,10 @@ msgstr "Em breve"
 #: packages/core/src/app/components/PasswordGenerator.tsx
 msgid "Comma (,)"
 msgstr "Vírgula (,)"
+
+#: packages/core/src/app/screens/Settings/components/GeneralSection.tsx
+msgid "Compact"
+msgstr "Compacto"
 
 #: packages/core/src/app/screens/EntryDetail/ConflictBanner.tsx
 msgid "Compare versions"
@@ -1735,6 +1764,10 @@ msgstr "Campos personalizados"
 msgid "CVV"
 msgstr "CVV"
 
+#: packages/core/src/app/screens/Settings/components/GeneralSection.tsx
+msgid "Cycle logins with the keyboard"
+msgstr "Alternar logins com o teclado"
+
 #: packages/core/src/app/screens/Settings/components/BackupSection.tsx
 msgid "Daily"
 msgstr "Diariamente"
@@ -1943,6 +1976,10 @@ msgstr "Baixando…"
 #: packages/core/src/app/screens/Settings/components/UpdatesSection.tsx
 msgid "Downloads and restarts Bramble. Your vault is untouched."
 msgstr "Baixa e reinicia o Bramble. Seu cofre permanece intacto."
+
+#: packages/core/src/app/screens/Settings/components/GeneralSection.tsx
+msgid "Dropdown rows"
+msgstr "Linhas do menu"
 
 #: packages/core/src/app/screens/Settings/components/SshAgentSection.tsx
 msgid "DSA keys aren't supported"
@@ -3080,6 +3117,11 @@ msgstr "Nenhum cartão salvo neste site. Remova para começar a solicitar novame
 msgid "No security key registered on this vault."
 msgstr "Nenhuma chave de segurança registrada neste cofre."
 
+#: packages/core/src/app/screens/Settings/components/GeneralSection.tsx
+msgid "No shortcut is set. Set one in your browser's extension shortcuts."
+msgstr ""
+"Nenhum atalho definido. Defina um nos atalhos de extensões do seu navegador."
+
 #. placeholder {0}: shell.appName
 #: packages/core/src/app/screens/Import/ImportShell.tsx
 msgid "No transfer is waiting. Start one from the other app and pick {0}."
@@ -3164,6 +3206,12 @@ msgstr "Nada está arquivado. Itens arquivados são mantidos aqui, fora do preen
 #: packages/core/src/app/screens/Settings/components/BiometricSection.tsx
 #~ msgid "Nothing is enrolled in Face ID or Touch ID, so the device passcode is the only gate."
 #~ msgstr "Nada está cadastrado no Face ID ou Touch ID, portanto o código do dispositivo é a única proteção."
+
+#: packages/core/src/app/screens/Settings/components/GeneralSection.tsx
+msgid ""
+"Nothing is drawn on the page. Use the keyboard shortcut to fill a login."
+msgstr ""
+"Nada é exibido na página. Use o atalho de teclado para preencher um login."
 
 #: packages/core/src/app/screens/Import/util/count-line.tsx
 msgid "Nothing to import"
@@ -3313,6 +3361,10 @@ msgstr "Abrir na janela"
 #: packages/core/src/app/OptionsApp.tsx
 msgid "Open it from the {0} popup and unlock it with its master password."
 msgstr "Abra-o a partir do pop-up {0} e desbloqueie-o com sua senha mestra."
+
+#: packages/core/src/app/screens/Settings/components/GeneralSection.tsx
+msgid "Open on focus"
+msgstr "Abrir ao focar"
 
 #: packages/core/src/app/screens/Settings/components/DesktopLinkSection.tsx
 msgid "Open that vault"
@@ -3582,6 +3634,12 @@ msgstr "Destacar em janela para anexar arquivos"
 #: packages/core/src/app/screens/Settings/components/MailboxAccount.tsx
 msgid "Posting is paused for this account"
 msgstr "A postagem está pausada para esta conta"
+
+#: packages/core/src/app/screens/Settings/components/GeneralSection.tsx
+msgid "Press {autofillShortcut} in a login field to fill the next saved login."
+msgstr ""
+"Pressione {autofillShortcut} em um campo de login para preencher o próximo "
+"login salvo."
 
 #: packages/core/src/app/entry-modes/login.tsx
 msgid "Press Enter / submit the form right after the credentials are filled in."
@@ -3930,6 +3988,10 @@ msgstr "A rotação falhou e nada foi alterado. Desbloqueie e tente novamente."
 #~ msgstr "Executa conforme programado mesmo com o Bramble bloqueado"
 
 #: packages/core/src/app/screens/Settings/components/GeneralSection.tsx
+msgid "Rows"
+msgstr "Linhas"
+
+#: packages/core/src/app/screens/Settings/components/GeneralSection.tsx
 msgid "Runs quietly in the menu bar so scheduled backups happen without you opening the app."
 msgstr "Executa silenciosamente na barra de menus para que os backups agendados sejam executados sem abrir o app."
 
@@ -3997,6 +4059,10 @@ msgstr "Salvo {0} em {1}"
 #: packages/core/src/app/routes/TotpSetupRoute.tsx
 msgid "Saved {name} with its 2FA code"
 msgstr "Salvo {name} com o código 2FA"
+
+#: packages/core/src/app/screens/Settings/components/GeneralSection.tsx
+msgid "Saved logins open as soon as you click into a field."
+msgstr "Os logins salvos abrem assim que você clica em um campo."
 
 #. placeholder {0}: descriptor.label
 #: packages/core/src/app/screens/Settings/components/AliasSection.tsx
@@ -4219,6 +4285,10 @@ msgstr "Configurações"
 #: packages/core/src/app/screens/Settings/Settings.tsx
 msgid "Settings sections"
 msgstr "Seções de configurações"
+
+#: packages/core/src/app/screens/Settings/components/GeneralSection.tsx
+msgid "Shortcut only"
+msgstr "Somente atalho"
 
 #: packages/core/src/app/screens/Settings/components/MailboxAccount.tsx
 msgid "Show"
@@ -5608,6 +5678,10 @@ msgstr "Bem-vindo ao {appName}"
 #: packages/core/src/app/components/WhatsNewCard.tsx
 msgid "What's new in {version}"
 msgstr "Novidades da versão {version}"
+
+#: packages/core/src/app/screens/Settings/components/GeneralSection.tsx
+msgid "When you click a login field"
+msgstr "Ao clicar em um campo de login"
 
 #: packages/core/src/app/screens/Settings/components/BiometricSection.tsx
 msgid "Windows Hello"

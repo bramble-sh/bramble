@@ -253,6 +253,40 @@ export const extensionShell: ShellAdapter = {
 		if (!this.isDetached()) window.close();
 		return true;
 	},
+	async setAutofillTrigger(trigger) {
+		await api.runtime.sendMessage({ type: "AUTOFILL_SET_TRIGGER", payload: { trigger } });
+	},
+	async setAutofillDensity(density) {
+		await api.runtime.sendMessage({ type: "AUTOFILL_SET_DENSITY", payload: { density } });
+	},
+	async getAutofillShortcut() {
+		try {
+			const commands = await api.commands.getAll();
+			return commands.find((command) => command.name === "autofill-cycle")?.shortcut || null;
+		} catch {
+			return null;
+		}
+	},
+	async openShortcutSettings() {
+		try {
+			// Firefox can open its own Manage Extension Shortcuts page directly (128+). Chromium
+			// has no such API, but its shortcuts page is reachable as a tab from an extension.
+			const commands = api.commands as typeof chrome.commands & {
+				openShortcutSettings?: () => Promise<void>;
+			};
+			if (typeof commands.openShortcutSettings === "function") {
+				await commands.openShortcutSettings();
+				return;
+			}
+			const firefox = api.runtime.getURL("").startsWith("moz-extension:");
+			await api.tabs.create({
+				url: firefox ? "about:addons" : "chrome://extensions/shortcuts",
+			});
+		} catch {
+			// A browser that refuses the navigation still has the chord shown in the row; the user
+			// can open the shortcuts page by hand.
+		}
+	},
 	// Reports failure, unlike setAutofillEnabled above: turning this on can genuinely fail
 	// (another extension holds the WebAuthn proxy), and a switch that says "on" while nothing is
 	// attached is worse than an error.

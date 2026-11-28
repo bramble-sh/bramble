@@ -1,61 +1,72 @@
 /// <reference types="chrome" />
 
-// Top-frame side of the relayed picker. This frame owns only the iframe ELEMENT:
-// it creates it, parks it at the relayed rect, applies the height the UI asks for,
-// and destroys it. It never sees match summaries or picks, which travel directly
-// between the field's frame and the UI document. See docs/autofill.md.
-//
-// SECURITY: because this frame controls the element's geometry, it also owns the
-// anti-clickjacking guard. The non-relayed picker checks trust at pick time, which is
-// impossible here (the pick never passes through this frame), so the guard runs
-// continuously and tears the host down the moment it stops being legible. You cannot
-// click what is not there, and a page cannot suppress the teardown: the verdict comes
-// from computed style this frame reads itself, not from any message.
+// Top-frame side of the relayed picker. This frame owns only the iframe element and the
+// anti-clickjacking guard; match data travels directly between the field's frame and the UI.
 
 import { api } from "./content-api";
 import { isExtensionOrigin } from "./ext-origin";
 import type { RelayedAnchor, RelayRect } from "./frame-relay";
 import { hostOffset } from "./host-offset";
-import { isLegible } from "./legibility";
+import { hostIsTrustworthy } from "./legibility";
 import { onTeardown } from "./lifecycle";
+import { MARK_INSET } from "./mark";
+import { MENU_COLLAPSE_MS, MENU_FADE_MS, maxMenuHeight, relayWidth } from "./placement";
 
-const AUTOFILL_UI_URL = api.runtime.getURL("autofill-ui.html");
+const AUTOFILL_UI_URL = (() => {
+	try {
+		return api.runtime.getURL("autofill-ui.html");
+	} catch {
+		// Orphaned injection: no relayed host can be created, and the field's frame will time out
+		// to its own renderer.
+		return "";
+	}
+})();
 const MAX_HEIGHT = 400;
-
-function pickerWidth(fieldWidth: number): number {
-	return Math.min(Math.max(fieldWidth, 300), 440);
-}
-
 type Hosted = {
 	relayId: string;
 	host: HTMLElement;
 	frame: HTMLIFrameElement;
 	rect: RelayRect;
+	/** The larger of the two gaps around the field, so the UI can cap its list. */
+	cap?: number;
 };
 
 let hosted: Hosted | null = null;
 let watchdog: number | null = null;
+let relayExit: Animation | null = null;
 
 /**
  * A relayed rect is in this frame's VIEWPORT coordinates, but the host is
- * position:absolute, so it is placed relative to its containing block. Placed in
- * viewport coordinates, the picker lands off-screen on a scrolled checkout or one
- * whose dialog has blocked the page's scroll, and the watchdog below then destroys it
- * for being illegible. Matches positionHostElement in picker.ts.
+ * position:absolute, so it is placed in DOCUMENT coordinates. Without the scroll
+ * offset the picker is drawn scrollY pixels too high, which on a checkout you had to
+ * scroll down to reach puts it off-screen entirely, and the watchdog below then
+ * destroys it for being illegible. Matches positionHostElement in picker.ts.
  */
 function position(h: Hosted): void {
+	const width = relayWidth(h.rect.width, window.innerWidth);
 	const offset = hostOffset(h.host);
-	const x = h.rect.x + offset.x;
-	const y = h.rect.y + h.rect.height + offset.y + 2;
+	const x = Math.max(offset.x, Math.min(h.rect.x + offset.x, offset.x + window.innerWidth - width));
+	// The iframe is 0 tall until the UI reports; once it has a height, place it above when the
+	// space below the field is too small. A relayed field often sits low in a checkout form.
+	const height = h.frame.getBoundingClientRect().height;
+	const spaceBelow = window.innerHeight - (h.rect.y + h.rect.height);
+	const spaceAbove = h.rect.y;
+	const above = height > 0 && spaceBelow < height + 8 && spaceAbove > spaceBelow;
+	const y = above ? h.rect.y - height - 2 + offset.y : h.rect.y + h.rect.height + 2 + offset.y;
 	const transform = `translate3d(${x}px, ${y}px, 0)`;
-	const width = `${pickerWidth(h.rect.width)}px`;
-	if (h.host.style.transform === transform && h.host.style.width === width) return;
-	const moved = h.host.style.transform !== "";
-	h.host.style.transform = transform;
-	h.host.style.width = width;
-	// The UI holds clicks until the picker has sat still; it cannot see the move itself. Carries
-	// nothing, so "*" is fine, and a forged one only ever delays a click.
-	if (moved) h.frame.contentWindow?.postMessage({ type: "UI_MOVED" }, "*");
+	if (h.host.style.transform !== transform) {
+		h.host.style.transform = transform;
+		// The UI cannot see the host move; reset its early-click guard so a click aimed at where
+		// the card used to be cannot fill.
+		h.frame.contentWindow?.postMessage({ type: "UI_MOVED" }, "*");
+	}
+	h.host.style.width = `${width}px`;
+	h.host.classList.toggle("tp-above", above);
+	// The UI cannot see this frame's viewport, so it cannot cap the list to the gap around the
+	// field by itself. Post the cap; the first post can land before the UI is ready, so the
+	// UI_RESIZE handler posts it again once the document exists.
+	h.cap = maxMenuHeight(spaceBelow, spaceAbove);
+	h.frame.contentWindow?.postMessage({ type: "UI_MAX_HEIGHT", maxHeight: h.cap }, "*");
 }
 
 function stopWatchdog(): void {
@@ -65,8 +76,23 @@ function stopWatchdog(): void {
 	}
 }
 
+/** Cancel a collapse-to-mark exit and restore the host's normal transform. */
+function cancelRelayExit(): void {
+	if (relayExit) {
+		relayExit.cancel();
+		relayExit = null;
+	}
+	if (hosted) {
+		hosted.host.style.transformOrigin = "";
+		// The base host style is pointer-events: auto (a modal's body can be none). Clearing it
+		// would inherit the modal's none and make the repositioned menu unclickable.
+		hosted.host.style.pointerEvents = "auto";
+	}
+}
+
 /** Drop the hosted picker. Called on withdrawal, teardown, or a failed trust check. */
 export function destroyRelayHost(): void {
+	cancelRelayExit();
 	stopWatchdog();
 	if (hosted) {
 		hosted.host.remove();
@@ -75,14 +101,16 @@ export function destroyRelayHost(): void {
 }
 
 // A zero-height frame is the normal pre-render state, so the guard only starts
-// policing once the UI has reported a real height.
+// policing once the UI has reported a real height. The pick goes straight from the UI to the
+// field's frame, so this frame's watchdog is the page-side check and must run every frame:
+// Firefox has no IntersectionObserver vouch behind it.
 function startWatchdog(): void {
 	if (watchdog !== null) return;
 	const tick = (): void => {
 		watchdog = null;
 		if (!hosted) return;
 		const measurable = hosted.frame.getBoundingClientRect().height >= 20;
-		if (measurable && !isLegible(hosted.host)) {
+		if (measurable && !hostIsTrustworthy(hosted.host)) {
 			destroyRelayHost();
 			return;
 		}
@@ -93,10 +121,14 @@ function startWatchdog(): void {
 
 /** Create or re-park the hosted picker for a descendant's relayed anchor. */
 export function showRelayHost(anchor: RelayedAnchor): void {
+	if (!AUTOFILL_UI_URL) return;
 	if (hosted && hosted.relayId !== anchor.relayId) destroyRelayHost();
 	if (hosted) {
+		// A new query during the 240ms exit (the user re-opened the field) takes the host back.
+		cancelRelayExit();
 		hosted.rect = anchor.rect;
 		position(hosted);
+		startWatchdog();
 		return;
 	}
 	const host = document.createElement("div");
@@ -129,9 +161,55 @@ export function hostedFrameForTest(): HTMLIFrameElement | null {
 	return hosted?.frame ?? null;
 }
 
-/** Withdraw the host for `relayId`, ignoring a stale id from an already-replaced relay. */
-export function closeRelayHost(relayId: string): void {
-	if (hosted?.relayId === relayId) destroyRelayHost();
+/** Withdraw the host for `relayId`, ignoring a stale id from an already-replaced relay.
+ *  `collapse` is a pick: shrink the card into the field's in-field mark before destroying it.
+ *  A plain dismissal still closes instantly. */
+export function closeRelayHost(relayId: string, collapse = false): void {
+	if (hosted?.relayId !== relayId) return;
+	const h = hosted;
+	if (!collapse || typeof h.host.animate !== "function") {
+		destroyRelayHost();
+		return;
+	}
+	const rect = h.host.getBoundingClientRect();
+	if (rect.width < 1 || rect.height < 1) {
+		destroyRelayHost();
+		return;
+	}
+	stopWatchdog();
+	cancelRelayExit();
+	h.host.style.pointerEvents = "none";
+	const reduced = window.matchMedia?.("(prefers-reduced-motion: reduce)")?.matches === true;
+	if (reduced) {
+		relayExit = h.host.animate([{ opacity: 1 }, { opacity: 0 }], {
+			duration: MENU_FADE_MS,
+			easing: "ease-out",
+			fill: "forwards",
+		});
+	} else {
+		const markX = h.rect.rtl
+			? h.rect.x + MARK_INSET + 13
+			: h.rect.x + h.rect.width - MARK_INSET - 13;
+		const markY = h.rect.y + h.rect.height / 2;
+		h.host.style.transformOrigin = `${markX - rect.left}px ${markY - rect.top}px`;
+		const base = getComputedStyle(h.host).transform;
+		const baseTransform = base && base !== "none" ? base : "";
+		relayExit = h.host.animate(
+			[
+				{ transform: `${baseTransform} scale(1)`.trim(), opacity: 1 },
+				{ transform: `${baseTransform} scale(0.02)`.trim(), opacity: 0 },
+			],
+			{ duration: MENU_COLLAPSE_MS, easing: "cubic-bezier(0.4, 0, 0.2, 1)", fill: "forwards" },
+		);
+	}
+	relayExit.onfinish = () => {
+		// Same as picker.ts: release the fill-forwards end state. The host element is removed
+		// below so today the stuck fill dies with it, but cancel anyway so a future reuse of
+		// the host cannot inherit a collapsed animation.
+		relayExit?.cancel();
+		relayExit = null;
+		destroyRelayHost();
+	};
 }
 
 // The only message this frame accepts from the UI is its height. It must come from
@@ -144,6 +222,10 @@ window.addEventListener("message", (e) => {
 	if (msg?.type !== "UI_RESIZE") return;
 	const height = Math.max(0, Math.min(MAX_HEIGHT, Number(msg.height) || 0));
 	hosted.frame.style.height = `${height}px`;
+	// The first placement ran while the frame was 0 tall; now that the menu has a height, choose
+	// above/below again so a field near the bottom does not leave the card cut off. This also
+	// re-posts the gap cap once the UI document exists to receive it.
+	position(hosted);
 });
 
 onTeardown(destroyRelayHost);

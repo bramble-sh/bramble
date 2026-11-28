@@ -433,6 +433,14 @@ msgstr "সিকিউরিটি কোড ৩ বা ৪ ডিজিটে�
 msgid "A server you're connected to with ssh -A wants to see and use your keys until Bramble locks."
 msgstr "আপনি ssh -A দিয়ে যে সার্ভারে সংযুক্ত আছেন, সেটি Bramble লক না হওয়া পর্যন্ত আপনার কীগুলো দেখতে এবং ব্যবহার করতে চায়।"
 
+#: packages/core/src/app/screens/Settings/components/GeneralSection.tsx
+msgid ""
+"A small Bramble mark appears in the field. Click it to see saved logins, or "
+"type a username to see it completed."
+msgstr ""
+"ফিল্ডে একটি ছোট Bramble চিহ্ন দেখা যায়। সংরক্ষিত লগইন দেখতে এটিতে ক্লিক "
+"করুন, অথবা ব্যবহারকারীর নাম টাইপ করলে এটি সম্পূর্ণ হয়।"
+
 #: packages/core/src/app/screens/Settings/components/MailboxSection.tsx
 msgid "A token is at least 16 letters, digits, dashes or underscores"
 msgstr "একটি টোকেনে কমপক্ষে ১৬টি বর্ণ, অঙ্ক, ড্যাশ বা আন্ডারস্কোর থাকে"
@@ -996,6 +1004,10 @@ msgstr "Bramble-এ একটি অপ্রত্যাশিত সমস্�
 #~ msgid "Bramble is built by one person"
 #~ msgstr "Bramble is built by one person"
 
+#: packages/core/src/app/screens/Settings/components/GeneralSection.tsx
+msgid "Bramble icon"
+msgstr "Bramble আইকন"
+
 #: packages/core/src/app/screens/Settings/components/SupportSection.tsx
 msgid "Bramble is free and open source. If it's useful to you, a tip helps keep it going. Scan a code with your wallet, or copy the address. Thank you."
 msgstr "Bramble বিনামূল্যের ও ওপেন সোর্স। এটি আপনার কাজে লাগলে, সামান্য অনুদান এর কাজ চালিয়ে যেতে সাহায্য করবে। আপনার ওয়ালেট দিয়ে একটি কোড স্ক্যান করুন, অথবা ঠিকানা কপি করুন। ধন্যবাদ।"
@@ -1333,6 +1345,19 @@ msgstr "নিরাপত্তার জন্য কোডগুলো অল
 msgid "Combine into one"
 msgstr "একসাথে করুন"
 
+#: packages/core/src/app/screens/Settings/components/GeneralSection.tsx
+msgid "Comfortable"
+msgstr "আরামদায়ক"
+
+#: packages/core/src/app/screens/Settings/components/GeneralSection.tsx
+msgid ""
+"Comfortable gives each saved login the full row for its title, so a long name "
+"stays readable, with the username on the next line. Compact fits more rows."
+msgstr ""
+"আরামদায়ক প্রতিটি সংরক্ষিত লগইনের শিরোনামের জন্য পুরো সারি দেয়, যাতে একটি "
+"দীর্ঘ নাম পড়া যায়, এবং ব্যবহারকারীর নাম পরের লাইনে থাকে। কমপ্যাক্ট আরও সারি "
+"ধরে।"
+
 #: packages/core/src/app/screens/Settings/components/BackupSection.tsx
 msgid "Coming soon"
 msgstr "শিগগিরই আসছে"
@@ -1340,6 +1365,10 @@ msgstr "শিগগিরই আসছে"
 #: packages/core/src/app/components/PasswordGenerator.tsx
 msgid "Comma (,)"
 msgstr "কমা (,)"
+
+#: packages/core/src/app/screens/Settings/components/GeneralSection.tsx
+msgid "Compact"
+msgstr "কমপ্যাক্ট"
 
 #: packages/core/src/app/screens/EntryDetail/ConflictBanner.tsx
 msgid "Compare versions"
@@ -1731,6 +1760,10 @@ msgstr "কাস্টম ফিল্ড"
 msgid "CVV"
 msgstr "CVV"
 
+#: packages/core/src/app/screens/Settings/components/GeneralSection.tsx
+msgid "Cycle logins with the keyboard"
+msgstr "কীবোর্ড দিয়ে লগইন পরিবর্তন করুন"
+
 #: packages/core/src/app/screens/Settings/components/BackupSection.tsx
 msgid "Daily"
 msgstr "প্রতিদিন"
@@ -1939,6 +1972,10 @@ msgstr "ডাউনলোড হচ্ছে…"
 #: packages/core/src/app/screens/Settings/components/UpdatesSection.tsx
 msgid "Downloads and restarts Bramble. Your vault is untouched."
 msgstr "আপডেট ডাউনলোড করে Bramble আবার চালু হবে। আপনার ভল্টে কোনো পরিবর্তন হবে না।"
+
+#: packages/core/src/app/screens/Settings/components/GeneralSection.tsx
+msgid "Dropdown rows"
+msgstr "ড্রপডাউন সারি"
 
 #: packages/core/src/app/screens/Settings/components/SshAgentSection.tsx
 msgid "DSA keys aren't supported"
@@ -3080,6 +3117,11 @@ msgstr "এই সাইটে সেভ করার পপআপ দেখা�
 msgid "No security key registered on this vault."
 msgstr "এই ভল্টে কোনো সিকিউরিটি কি রেজিস্টার করা নেই।"
 
+#: packages/core/src/app/screens/Settings/components/GeneralSection.tsx
+msgid "No shortcut is set. Set one in your browser's extension shortcuts."
+msgstr ""
+"কোনো শর্টকাট সেট করা নেই। আপনার ব্রাউজারের এক্সটেনশন শর্টকাটে একটি সেট করুন।"
+
 #. placeholder {0}: shell.appName
 #: packages/core/src/app/screens/Import/ImportShell.tsx
 msgid "No transfer is waiting. Start one from the other app and pick {0}."
@@ -3164,6 +3206,11 @@ msgstr "কিছুই আর্কাইভ করা নেই। আর্�
 #: packages/core/src/app/screens/Settings/components/BiometricSection.tsx
 #~ msgid "Nothing is enrolled in Face ID or Touch ID, so the device passcode is the only gate."
 #~ msgstr "Nothing is enrolled in Face ID or Touch ID, so the device passcode is the only gate."
+
+#: packages/core/src/app/screens/Settings/components/GeneralSection.tsx
+msgid ""
+"Nothing is drawn on the page. Use the keyboard shortcut to fill a login."
+msgstr "পেজে কিছুই দেখানো হয় না। লগইন পূরণ করতে কীবোর্ড শর্টকাট ব্যবহার করুন।"
 
 #: packages/core/src/app/screens/Import/util/count-line.tsx
 msgid "Nothing to import"
@@ -3313,6 +3360,10 @@ msgstr "উইন্ডোতে খুলুন"
 #: packages/core/src/app/OptionsApp.tsx
 msgid "Open it from the {0} popup and unlock it with its master password."
 msgstr "{0} পপআপ থেকে এটি খুলে মাস্টার পাসওয়ার্ড দিয়ে আনলক করুন।"
+
+#: packages/core/src/app/screens/Settings/components/GeneralSection.tsx
+msgid "Open on focus"
+msgstr "ফোকাসে খুলুন"
 
 #: packages/core/src/app/screens/Settings/components/DesktopLinkSection.tsx
 msgid "Open that vault"
@@ -3582,6 +3633,10 @@ msgstr "ফাইল সংযুক্ত করতে আলাদা উই�
 #: packages/core/src/app/screens/Settings/components/MailboxAccount.tsx
 msgid "Posting is paused for this account"
 msgstr "এই অ্যাকাউন্টের জন্য পোস্টিং স্থগিত আছে"
+
+#: packages/core/src/app/screens/Settings/components/GeneralSection.tsx
+msgid "Press {autofillShortcut} in a login field to fill the next saved login."
+msgstr "পরবর্তী সংরক্ষিত লগইন পূরণ করতে লগইন ফিল্ডে {autofillShortcut} চাপুন।"
 
 #: packages/core/src/app/entry-modes/login.tsx
 msgid "Press Enter / submit the form right after the credentials are filled in."
@@ -3930,6 +3985,10 @@ msgstr "কি বদলানো যায়নি এবং কোনো প�
 #~ msgstr "Runs on schedule even while Bramble is locked"
 
 #: packages/core/src/app/screens/Settings/components/GeneralSection.tsx
+msgid "Rows"
+msgstr "সারি"
+
+#: packages/core/src/app/screens/Settings/components/GeneralSection.tsx
 msgid "Runs quietly in the menu bar so scheduled backups happen without you opening the app."
 msgstr "মেনু বারে নীরবে চলে, তাই অ্যাপ না খুললেও নির্ধারিত সময়ে ব্যাকআপ হয়।"
 
@@ -3989,6 +4048,10 @@ msgstr "{1}-এ {0} সেভ হয়েছে"
 #: packages/core/src/app/routes/TotpSetupRoute.tsx
 msgid "Saved {name} with its 2FA code"
 msgstr "{name} 2FA কোডসহ সংরক্ষণ করা হয়েছে"
+
+#: packages/core/src/app/screens/Settings/components/GeneralSection.tsx
+msgid "Saved logins open as soon as you click into a field."
+msgstr "আপনি একটি ফিল্ডে ক্লিক করলেই সংরক্ষিত লগইন খুলে যায়।"
 
 #. placeholder {0}: descriptor.label
 #: packages/core/src/app/screens/Settings/components/AliasSection.tsx
@@ -4211,6 +4274,10 @@ msgstr "সেটিংস"
 #: packages/core/src/app/screens/Settings/Settings.tsx
 msgid "Settings sections"
 msgstr "সেটিংসের বিভাগ"
+
+#: packages/core/src/app/screens/Settings/components/GeneralSection.tsx
+msgid "Shortcut only"
+msgstr "শুধু শর্টকাট"
 
 #: packages/core/src/app/screens/Settings/components/MailboxAccount.tsx
 msgid "Show"
@@ -5596,6 +5663,10 @@ msgstr "{appName}-এ স্বাগতম"
 #: packages/core/src/app/components/WhatsNewCard.tsx
 msgid "What's new in {version}"
 msgstr "{version} সংস্করণে নতুন কী আছে"
+
+#: packages/core/src/app/screens/Settings/components/GeneralSection.tsx
+msgid "When you click a login field"
+msgstr "আপনি লগইন ফিল্ডে ক্লিক করলে"
 
 #: packages/core/src/app/screens/Settings/components/BiometricSection.tsx
 msgid "Windows Hello"

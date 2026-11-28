@@ -23,6 +23,7 @@
 import { isExtensionOrigin } from "./ext-origin";
 import type { FrameRelay, RelayRect } from "./frame-relay";
 import type { AliasRowState } from "./html/dropdown-alias";
+import type { DropdownSkin } from "./skin";
 import type { MatchSummary } from "./types";
 
 // The UI announces itself; this frame cannot go looking for it. `window.frames`
@@ -41,17 +42,23 @@ export type RelayRender =
 			suggest?: SuggestOpt;
 			alias?: AliasRowState;
 			carriedId?: string;
+			skin?: DropdownSkin;
+			// The match list was capped; draw the "keep typing" note after the rows.
+			more?: boolean;
+			// A trailing "new login" row, under a login field's matches (#213).
 			newLogin?: boolean;
 	  }
-	| { kind: "locked" };
+	| { kind: "locked"; skin?: DropdownSkin };
 
 export interface RelayClientHandlers {
 	onPick(entryId: string, otpOnly: boolean): void;
 	onPopout(): void;
-	onHighlight(active: boolean): void;
+	onHighlight(active: boolean, label?: string): void;
 	onUseSuggested(): void;
 	onRegenerate(): void;
 	onNewLogin(): void;
+	/** A row's "open in Bramble" action, for an id this frame actually rendered. */
+	onOpenEntry(entryId: string): void;
 }
 
 let relay: FrameRelay | null = null;
@@ -96,7 +103,7 @@ function flush(): void {
 	pending = null;
 	if (render.kind === "locked") {
 		renderedIds = new Set();
-		post({ type: "RENDER_LOCKED" });
+		post({ type: "RENDER_LOCKED", skin: render.skin });
 		return;
 	}
 	renderedIds = new Set(render.matches.map((m) => m.id));
@@ -108,7 +115,9 @@ function flush(): void {
 		suggest: render.suggest,
 		alias: render.alias,
 		carriedId: render.carriedId,
-		newLogin: render.newLogin,
+		skin: render.skin,
+		more: render.more === true,
+		newLogin: render.newLogin === true,
 	});
 }
 
@@ -131,8 +140,8 @@ export function repositionRelayed(rect: RelayRect): void {
 }
 
 /** Withdraw the relayed picker and forget the UI binding. */
-export function closeRelayed(): void {
-	if (relay && relayId) relay.close(relayId);
+export function closeRelayed(collapse = false): void {
+	if (relay && relayId) relay.close(relayId, collapse);
 	relayId = null;
 	uiWindow = null;
 	uiOrigin = null;
@@ -140,9 +149,9 @@ export function closeRelayed(): void {
 	renderedIds = new Set();
 }
 
-/** Forward a navigation key to the relayed UI. */
-export function keyToRelayed(key: string): void {
-	if (relayedPickerIsLive()) post({ type: "UI_KEY", key });
+/** Forward a navigation key to the relayed UI. `open` is Ctrl/Cmd+Enter: open, don't fill. */
+export function keyToRelayed(key: string, open = false): void {
+	if (relayedPickerIsLive()) post({ type: "UI_KEY", key, open: open || undefined });
 }
 
 function handleMessage(e: MessageEvent): void {
@@ -172,9 +181,11 @@ function handleMessage(e: MessageEvent): void {
 			handlers?.onPick(entryId, otpOnlyFlag);
 			break;
 		}
-		case "UI_HIGHLIGHT":
-			handlers?.onHighlight(!!(data as { active?: unknown }).active);
+		case "UI_HIGHLIGHT": {
+			const d = data as { active?: unknown; label?: unknown };
+			handlers?.onHighlight(!!d.active, typeof d.label === "string" ? d.label : undefined);
 			break;
+		}
 		case "UI_POPOUT":
 			handlers?.onPopout();
 			break;
@@ -187,6 +198,12 @@ function handleMessage(e: MessageEvent): void {
 		case "UI_NEW_LOGIN":
 			handlers?.onNewLogin();
 			break;
+		case "UI_OPEN_ENTRY": {
+			const entryId = (data as { entryId?: unknown }).entryId;
+			if (typeof entryId !== "string" || !renderedIds.has(entryId)) return;
+			handlers?.onOpenEntry(entryId);
+			break;
+		}
 	}
 }
 
