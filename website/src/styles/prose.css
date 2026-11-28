@@ -101,3 +101,59 @@ html.dark .prose .astro-code span {
 html.dark .prose .astro-code span[style*="--shiki-dark:#6A737D"] {
 	color: #8b949e !important;
 }
+
+.prose table {
+	width: 100%;
+	border-collapse: collapse;
+	font-size: 0.9375rem;
+}
+.prose th {
+	text-align: left;
+	font-weight: 600;
+	color: var(--foreground);
+}
+.prose :is(th, td) {
+	border-bottom: 1px solid var(--border);
+	padding: 0.625rem 0.75rem 0.625rem 0;
+	vertical-align: top;
+}
+.prose td {
+	color: var(--muted-foreground);
+	overflow-wrap: anywhere;
+}
+.prose .nowrap {
+	white-space: nowrap;
+}
+/* On a phone a .stack-table shows each row as a block, every cell under its column's name
+   (data-label, hidden from screen readers, which hear the real header). The markup's ARIA roles
+   keep it a table to them once the cells stop displaying as cells. */
+@media (max-width: 40rem) {
+	.prose .stack-table thead {
+		position: absolute;
+		width: 1px;
+		height: 1px;
+		overflow: hidden;
+		clip-path: inset(50%);
+		white-space: nowrap;
+	}
+	.prose .stack-table :is(tbody, tr, th, td) {
+		display: block;
+	}
+	.prose .stack-table tr {
+		border-bottom: 1px solid var(--border);
+		padding: 0.875rem 0;
+	}
+	.prose .stack-table :is(th, td) {
+		border-bottom: 0;
+		padding: 0;
+	}
+	.prose .stack-table td[data-label]::before {
+		content: attr(data-label);
+		content: attr(data-label) / "";
+		display: block;
+		margin-top: 0.625rem;
+		font-size: 0.8125rem;
+		font-weight: 600;
+		color: var(--foreground);
+	}
+}

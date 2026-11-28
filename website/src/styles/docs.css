@@ -1,4 +1,4 @@
-/* Docs pages: steps, headings with links, keyboard keys, tables, search marks. */
+/* Docs pages: steps, headings with links, keyboard keys, search marks. Tables are in prose.css. */
 
 .docs-prose :is(h2, h3) {
 	position: relative;
@@ -58,26 +58,6 @@
 }
 .docs-prose ol > li > * + * {
 	margin-top: 0.75rem;
-}
-
-.docs-prose table {
-	width: 100%;
-	border-collapse: collapse;
-	font-size: 0.9375rem;
-}
-.docs-prose th {
-	text-align: left;
-	font-weight: 600;
-	color: var(--foreground);
-}
-.docs-prose :is(th, td) {
-	border-bottom: 1px solid var(--border);
-	padding: 0.625rem 0.75rem 0.625rem 0;
-	vertical-align: top;
-}
-.docs-prose td {
-	color: var(--muted-foreground);
-	overflow-wrap: anywhere;
 }
 
 .platform-panel {

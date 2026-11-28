@@ -1,6 +1,111 @@
 ---
 import LegalLayout from "@/layouts/LegalLayout.astro";
 import { SITE } from "@/consts";
+
+const CLOUDFLARE = "https://www.cloudflare.com/privacypolicy/";
+
+// The services Bramble runs on or pays through. Change these with the sections below.
+const vendors = [
+	{
+		name: "Cloudflare",
+		use: "Hosting bramble.sh, the apps' update checks, and the APT repository",
+		limits:
+			"It sees your network address, as any host does. The site has no analytics, tracking scripts, or cookies.",
+		policy: CLOUDFLARE,
+	},
+	{
+		name: "Cloudflare",
+		use: "Sync: the relay that helps your devices find each other, and the TURN relay for when they can't connect directly",
+		limits:
+			"Both carry only data encrypted end to end, which they can't read. To ration TURN, the relay keeps a salted hash of the address that asked, never the address, for a day at most. You can swap both for your own.",
+		policy: CLOUDFLARE,
+	},
+	{
+		name: "Cloudflare",
+		use: "Bramble's mailbox, and billing for it",
+		limits:
+			"The mailbox holds only encrypted changes, deleted once delivered. It and the payment records are stored in Cloudflare's EU jurisdiction. An account is a number, with no email or name. No request logs, and rate limits use keyed hashes, never addresses. Or run your own mailbox, and none of this involves us.",
+		policy: CLOUDFLARE,
+	},
+	{
+		name: "Stripe",
+		use: "Card payments for the mailbox, and working out sales tax",
+		limits:
+			"It is never given your account number: a payment carries a random reference, deleted once the payment arrives. We never see your card, and don't keep your email. For a Bitcoin or Monero payment, it gets only your country (and province in Canada) and the amount.",
+		policy: "https://stripe.com/privacy",
+	},
+	{
+		name: "netcup",
+		use: "The server in Germany that runs our own Bitcoin and Monero payment server, pay.bramble.sh",
+		limits:
+			"The payment server asks for no email, name, or address, keeps no log of visitors' addresses, and can't spend what it receives: the keys that spend aren't on it.",
+		policy: "https://www.netcup.com/en/contact/data-privacy",
+	},
+	{
+		name: "GitHub",
+		use: "Bramble's code, and its downloads: Android APKs, desktop installers, and desktop updates",
+		limits:
+			"The desktop app downloads an update only after you agree, and sends nothing from your vault or settings. GitHub sees your network address, as any download does.",
+		policy:
+			"https://docs.github.com/en/site-policy/privacy-policies/github-general-privacy-statement",
+	},
+	{
+		name: "Have I Been Pwned",
+		use: "The password breach check, if you turn it on",
+		limits:
+			"It gets only the first five characters of a password's SHA-1 hash, and pads its answer, so it can't tell which password you checked.",
+		policy: "https://haveibeenpwned.com/Privacy",
+	},
+	{
+		name: "Buttondown",
+		use: "The newsletter, if you subscribe",
+		limits: "It gets only the email address you subscribe with, which nothing else of yours is linked to.",
+		policy: "https://buttondown.com/legal/privacy",
+	},
+	{
+		name: "Ko-fi",
+		use: "Donations by card or PayPal, if you give there",
+		limits: "You can give Bitcoin or Monero instead, with no third party.",
+		policy: "https://more.ko-fi.com/privacy",
+	},
+];
+
+/** A policy link's label: the site it's on, e.g. cloudflare.com. */
+const site = (url: string) => new URL(url).hostname.split(".").slice(-2).join(".");
+
+// Services that hear from Bramble only once you connect your own account.
+const yours = [
+	{
+		name: "Dropbox",
+		use: "Encrypted backups",
+		gets: "Your encrypted backup files, which it can't open.",
+		policies: [["dropbox.com", "https://www.dropbox.com/privacy"]],
+	},
+	{
+		name: "Google Drive",
+		use: "Encrypted backups",
+		gets: "Your encrypted backup files, which it can't open. Bramble can see only the files it made.",
+		policies: [["google.com", "https://policies.google.com/privacy"]],
+	},
+	{
+		name: "S3-compatible or WebDAV storage",
+		use: "Encrypted backups",
+		gets: "Your encrypted backup files, which it can't open.",
+		policies: [],
+	},
+	{
+		name: "Email alias providers",
+		use: "A different email address for each site",
+		gets: "At most your API key, the site the address is for, and a short note naming Bramble. Nothing from your vault.",
+		policies: [
+			["Addy.io", "https://addy.io/privacy/"],
+			["SimpleLogin", "https://simplelogin.io/privacy/"],
+			["Fastmail", "https://www.fastmail.com/about/privacy/"],
+			["DuckDuckGo", "https://duckduckgo.com/email/privacy"],
+			["Firefox Relay", "https://www.mozilla.org/privacy/subscription-services/"],
+		],
+	},
+];
 ---
 
 <LegalLayout
@@ -72,6 +177,67 @@ import { SITE } from "@/consts";
 		<li>No selling, renting, or sharing of your data with anyone.</li>
 		<li>No use of your data for any purpose other than the features you use.</li>
 	</ul>
+
+	<h2>Third parties, at a glance</h2>
+	<p>
+		Bramble runs on a few outside services, and talks to others only when you connect your own
+		account. Each is involved only when you use the feature named, and the sections below have the
+		details.
+	</p>
+	<table class="stack-table" role="table" aria-label="Services Bramble uses">
+		<thead role="rowgroup">
+			<tr role="row">
+				<th role="columnheader" scope="col">Service</th>
+				<th role="columnheader" scope="col">What we use it for</th>
+				<th role="columnheader" scope="col">How we limit what it gets</th>
+				<th role="columnheader" scope="col" class="nowrap">Privacy policy</th>
+			</tr>
+		</thead>
+		<tbody role="rowgroup">
+			{vendors.map((v) => (
+				<tr role="row">
+					<th role="rowheader" scope="row">{v.name}</th>
+					<td role="cell" data-label="What we use it for">{v.use}</td>
+					<td role="cell" data-label="How we limit what it gets">{v.limits}</td>
+					<td role="cell" data-label="Privacy policy" class="nowrap">
+						<a href={v.policy}>{site(v.policy)}</a>
+					</td>
+				</tr>
+			))}
+		</tbody>
+	</table>
+
+	<h3>Services you connect yourself</h3>
+	<table class="stack-table" role="table" aria-label="Services you connect yourself">
+		<thead role="rowgroup">
+			<tr role="row">
+				<th role="columnheader" scope="col">Service</th>
+				<th role="columnheader" scope="col">What it does for you</th>
+				<th role="columnheader" scope="col">What it gets</th>
+				<th role="columnheader" scope="col" class="nowrap">Privacy policy</th>
+			</tr>
+		</thead>
+		<tbody role="rowgroup">
+			{yours.map((y) => (
+				<tr role="row">
+					<th role="rowheader" scope="row">{y.name}</th>
+					<td role="cell" data-label="What it does for you">{y.use}</td>
+					<td role="cell" data-label="What it gets">{y.gets}</td>
+					<td role="cell" data-label="Privacy policy">
+						{y.policies.length === 0
+							? "Your provider's"
+							: y.policies.map(([label, href], i) => (
+									<>{i > 0 && ", "}<a href={href}>{label}</a></>
+								))}
+					</td>
+				</tr>
+			))}
+		</tbody>
+	</table>
+	<p>
+		The stores you install Bramble from handle your download under their own terms. They show us only
+		anonymous statistics, plus crash reports if you let your device share them with developers.
+	</p>
 
 	<h2>Network connections, in full</h2>
 	<p>
