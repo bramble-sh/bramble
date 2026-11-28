@@ -7,7 +7,7 @@ import { SITE } from "@/consts";
 	title="Privacy Policy"
 	description="Bramble is a local-first password manager. It stores everything encrypted on your device. Its network use is limited to optional, off-by-default features you control (a password breach check, peer-to-peer sync between your own devices, a mailbox that holds encrypted changes for devices that are never online together, encrypted backups to a storage provider you choose, and email aliases from a provider you already use), plus an update check in the desktop and mobile apps that you can turn off."
 	path="/privacy"
-	meta="Effective date: 25 November 2026"
+	meta="Effective date: 27 November 2026"
 >
 	<p class="lead">
 		<strong>The short version:</strong> Bramble is a local-first password manager, available as a
@@ -20,14 +20,16 @@ import { SITE } from "@/consts";
 		encrypted backups to a storage provider you choose, and email aliases from a provider you
 		already use. The one exception is a check for updates in the desktop
 		and mobile apps; you can turn that off. None of these ever exposes your passwords or your
-		vault in a form that Bramble, a provider, or anyone else could read. Details below.
+		vault in a form that Bramble, a provider, or anyone else could read. The website, bramble.sh,
+		has no analytics or cookies, and keeps an email address only if you subscribe to the
+		newsletter. Details below.
 	</p>
 
 	<h2>What data Bramble handles</h2>
 	<p>
 		Bramble stores the data you choose to save in it, such as login usernames and passwords,
-		passkeys, payment cards, secure notes, SSH keys, and two-factor (TOTP) seeds, together with
-		your own app preferences. This data is created and used only to provide the password-manager
+		passkeys, payment cards, secure notes, SSH keys, two-factor (TOTP) seeds, and files you attach
+		to entries, together with your own app preferences. This data is created and used only to provide the password-manager
 		features you
 		asked for (saving, searching, and autofilling your credentials).
 	</p>
@@ -269,8 +271,9 @@ import { SITE } from "@/consts";
 			These are deleted after 120 days, after which nothing on our side connects a payment to an
 			account. For our accounts and tax returns, Bramble keeps a record of each sale, refund, and
 			lost dispute with its date, country, currency, amount, tax, and how it was paid, and no
-			account. The payment server keeps its invoices for the same purpose; once a
-			payment arrives, nothing there names an account.
+			account. These records are stored, like the mailbox's, in Cloudflare's EU jurisdiction. The
+			payment server keeps its invoices for the same purpose; once a payment arrives, nothing there
+			names an account.
 		</li>
 		<li>
 			<strong>Deleting the account.</strong> Deleting it on bramble.sh removes the account, its
@@ -516,15 +519,35 @@ import { SITE } from "@/consts";
 		there being no backdoor.
 	</p>
 
+	<h2>This website (bramble.sh)</h2>
+	<ul>
+		<li>
+			<strong>No analytics or cookies.</strong> bramble.sh runs no analytics or tracking scripts and
+			sets no cookies. It remembers your light or dark theme in your browser's own storage, and
+			sends it nowhere.
+		</li>
+		<li>
+			<strong>Hosting.</strong> Cloudflare serves the site. Like any host, it sees your network
+			address, and it keeps the standard traffic statistics it keeps for every site it serves.
+		</li>
+		<li>
+			<strong>The newsletter (optional).</strong> If you subscribe, your email address goes to
+			Buttondown, which keeps the list and sends the newsletter under its own privacy policy:{" "}
+			<a href="https://buttondown.com/legal/privacy">buttondown.com/legal/privacy</a>. Subscribing
+			opens a Buttondown page to confirm your address, and every issue has a link to unsubscribe.
+		</li>
+	</ul>
+
 	<h2>Data retention and deletion</h2>
 	<p>
 		Because your data lives only on your devices, you are in control of it. Removing the extension
 		or the app, deleting your vault file, and clearing the app's or extension's storage removes your
 		data. For the desktop app, that means deleting its data folder too; the Windows uninstaller
 		offers to do that for you, along with the credentials it stored in the Windows Credential
-		Manager. Apart from Bramble's mailbox, Bramble retains nothing on your behalf because it holds
-		nothing about you anywhere else. If you use the mailbox, see "The mailbox" above for what it
-		keeps, for how long, and how deleting your account removes it. If you turned on cloud backups,
+		Manager. Apart from Bramble's mailbox and the newsletter, Bramble retains nothing on your behalf
+		because it holds nothing about you anywhere else. If you use the mailbox, see "The mailbox"
+		above for what it keeps, for how long, and how deleting your account removes it. If you
+		subscribed to the newsletter, unsubscribing from any issue takes you off the list. If you turned on cloud backups,
 		delete the encrypted backup files from your storage provider too, since those live in your
 		account there, not with Bramble.
 	</p>
@@ -532,7 +555,7 @@ import { SITE } from "@/consts";
 	<h2>Children</h2>
 	<p>
 		Bramble is a general-purpose tool, not directed at children, and collects no information from
-		anyone beyond what the optional mailbox needs, described above.
+		anyone beyond what the optional mailbox and newsletter need, described above.
 	</p>
 
 	<h2>Changes to this policy</h2>
