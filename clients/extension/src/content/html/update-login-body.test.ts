@@ -46,4 +46,26 @@ describe("updateLoginBody", () => {
 		expect(out).toContain('<input type="hidden" name="tp-update-target" value="solo"');
 		expect(out).not.toContain("&lt;input");
 	});
+
+	it("shows the username the update would write, escaped", async () => {
+		const updateLoginBody = await loadUpdateLoginBody();
+		const out = updateLoginBody({
+			...base,
+			candidates: [{ id: "solo", name: "GitHub", username: "" }],
+			newUsername: "<me>@example.com",
+		});
+		expect(out).toContain("fieldUsername");
+		expect(out).toContain("<div>&lt;me&gt;@example.com</div>");
+		expect(out).not.toContain("()");
+	});
+
+	it("shows no username row when the username would not change", async () => {
+		const updateLoginBody = await loadUpdateLoginBody();
+		const candidates = [{ id: "solo", name: "GitHub", username: "octocat" }];
+		for (const newUsername of ["octocat", "", undefined]) {
+			const out = updateLoginBody({ ...base, candidates, newUsername });
+			expect(out).not.toContain("fieldUsername");
+			expect(out).toContain("(octocat)");
+		}
+	});
 });

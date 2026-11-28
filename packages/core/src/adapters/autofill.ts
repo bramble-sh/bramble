@@ -163,6 +163,8 @@ export interface UpdateLoginPrompt extends CornerPromptCommon {
 	/** Existing logins whose stored password differs; more than one shows a radio group so the user picks which to update. */
 	candidates: { id: string; name: string; username: string }[];
 	newPassword: string;
+	/** The captured username an update would write; empty keeps each entry's own. */
+	newUsername?: string;
 }
 
 /**

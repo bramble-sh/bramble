@@ -2,6 +2,7 @@ import type { BrowserContext, Page } from "@playwright/test";
 import { expect, test } from "./fixtures";
 import {
 	backgroundWorker,
+	clickCornerAction,
 	createVault,
 	expectUnlocked,
 	lock,
@@ -475,4 +476,93 @@ test("a bare confirm pair outweighs the login route it is served from", async ({
 	await waitOutPickerClickGuard(page);
 	await page.mouse.click(box!.x + 30, box!.y + Math.min(36, box!.height / 2));
 	await expect.poll(() => page.locator("#pass").inputValue()).toMatch(STRONG_CHARS);
+});
+
+// A signup that stays on the same document and swaps out <body>, as Turbo-style sites do.
+const BODY_SWAP_SIGNUP = SIGNUP.replace(
+	"</body>",
+	`<script>
+		document.querySelector('form').addEventListener('submit', function (e) {
+			e.preventDefault();
+			setTimeout(function () {
+				var next = document.createElement('body');
+				next.textContent = 'Welcome';
+				document.body.replaceWith(next);
+			}, 300);
+		});
+	</script></body>`,
+);
+
+/** The username on the pending capture stash for example.com. */
+async function pendingUsername(context: BrowserContext): Promise<string | undefined> {
+	const sw = await backgroundWorker(context);
+	return sw.evaluate(async () => {
+		const r = await chrome.storage.session.get("capture.pending.example.com");
+		return (r["capture.pending.example.com"] as { username?: string } | undefined)?.username;
+	});
+}
+
+/** Take the suggested password on the signup page's password field. */
+async function useSuggestion(page: Page) {
+	const host = page.locator(HOST);
+	await expect(async () => {
+		await page.locator("#pass").click();
+		await expect(host).toBeAttached({ timeout: 2000 });
+	}).toPass({ timeout: 20_000 });
+	const box = await host.boundingBox();
+	expect(box).not.toBeNull();
+	await waitOutPickerClickGuard(page);
+	await page.mouse.click(box!.x + 30, box!.y + Math.min(36, box!.height / 2));
+	await expect.poll(() => page.locator("#pass").inputValue()).toMatch(STRONG_CHARS);
+}
+
+test("submitting the signup captures the suggestion again, with the username typed since", async ({
+	context,
+	extensionId,
+}) => {
+	const popup = await context.newPage();
+	await createVault(popup, extensionId);
+	await openPopup(popup, extensionId);
+	await expectUnlocked(popup);
+
+	const page = await context.newPage();
+	await serve(page, SIGNUP);
+	await page.goto("https://example.com/");
+	await useSuggestion(page);
+	await expect.poll(() => pendingUsername(context)).toBe("");
+
+	await page.locator("#email").fill("new@example.com");
+	await page.getByRole("button", { name: /Create account/i }).click();
+
+	await expect.poll(() => pendingUsername(context)).toBe("new@example.com");
+	await expect(page.locator("#bramble-corner-prompt")).toBeAttached({ timeout: 10_000 });
+});
+
+test("the save card survives the signup replacing the page body, and still saves", async ({
+	context,
+	extensionId,
+}) => {
+	const popup = await context.newPage();
+	await createVault(popup, extensionId);
+	await openPopup(popup, extensionId);
+	await expectUnlocked(popup);
+
+	const page = await context.newPage();
+	await serve(page, BODY_SWAP_SIGNUP);
+	await page.goto("https://example.com/");
+	await useSuggestion(page);
+	await page.locator("#email").fill("new@example.com");
+	await page.getByRole("button", { name: /Create account/i }).click();
+
+	await expect(page.getByText("Welcome")).toBeVisible();
+	const card = page.locator("#bramble-corner-prompt");
+	await expect(card).toBeAttached({ timeout: 10_000 });
+	await expect.poll(() => pendingUsername(context)).toBe("new@example.com");
+
+	await clickCornerAction(page, "save");
+	await expect(card).toHaveCount(0);
+	await expect.poll(() => pendingUsername(context), { timeout: 10_000 }).toBeUndefined();
+	await openPopup(popup, extensionId);
+	await expect(popup.getByText("Items (1)")).toBeVisible({ timeout: 10_000 });
+	await expect(popup.getByText("new@example.com")).toBeVisible();
 });

@@ -137,7 +137,12 @@ vi.mock("./corner-prompt", () => ({
 	handleCornerPromptShow: vi.fn(),
 	queryCornerPrompt: vi.fn(),
 }));
-vi.mock("./capture", () => ({ maybeCommitCapture: vi.fn(), onPasswordEnter: vi.fn() }));
+const noteGeneratedPassword = vi.fn();
+vi.mock("./capture", () => ({
+	maybeCommitCapture: vi.fn(),
+	onPasswordEnter: vi.fn(),
+	noteGeneratedPassword,
+}));
 const fillTextField = vi.fn(() => true);
 // What fill.ts would report as the password most recently put into the page. Drives the
 // alias path's decision to refresh a capture the suggestion already stashed.
@@ -621,9 +626,14 @@ describe("content: strong-password suggestion on signup", () => {
 		expect(safeSendMessage).toHaveBeenCalledWith(
 			expect.objectContaining({
 				type: "CORNER_PROMPT_CAPTURE",
-				payload: expect.objectContaining({ username: "me@example.com", newLogin: true }),
+				payload: expect.objectContaining({
+					username: "me@example.com",
+					newLogin: true,
+					generated: true,
+				}),
 			}),
 		);
+		expect(noteGeneratedPassword).toHaveBeenCalledWith(expect.any(String), true);
 	});
 
 	it("still captures as a new login after the picker suppresses the anchor autocomplete", () => {

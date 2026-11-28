@@ -5,7 +5,7 @@
 // (the cached query result and the auto-open silence flag); the picker reports
 // user actions back through callbacks.
 
-import { maybeCommitCapture, onPasswordEnter } from "./capture";
+import { maybeCommitCapture, noteGeneratedPassword, onPasswordEnter } from "./capture";
 import { api } from "./content-api";
 import { handleCornerField, handleCornerPromptShow, queryCornerPrompt } from "./corner-prompt";
 import {
@@ -670,7 +670,12 @@ function applyGeneratedPassword(field: HTMLInputElement): void {
 	// A signup creates a NEW login; setting a password (reset, rotation, change form) rotates
 	// the existing one. Tell the background so a login already saved for this site doesn't turn
 	// a signup into an "update" -- and, just as importantly, so a reset doesn't duplicate it.
-	safeSendMessage({ type: "CORNER_PROMPT_CAPTURE", payload: { username, password, newLogin } });
+	// The page may drop the card, or the username may not be typed yet: the submit asks again.
+	noteGeneratedPassword(password, newLogin);
+	safeSendMessage({
+		type: "CORNER_PROMPT_CAPTURE",
+		payload: { username, password, newLogin, generated: true },
+	});
 }
 
 /**

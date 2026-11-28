@@ -21,12 +21,24 @@ let lastEditAt = 0;
 // the last edit is treated as a submit (React-removes-form, no native event).
 const SPA_SUBMIT_WINDOW_MS = 1500;
 
+// The picker's suggested password. It is script-filled, so no trusted `input` ever records it.
+// `sentUsername` is what a submit last sent for it, so the same pair is not offered over and over.
+let generated: { password: string; newLogin: boolean; sentUsername?: string } | null = null;
+
+/** Records a suggestion the user took, so the real submit offers it again with the final username. */
+export function noteGeneratedPassword(password: string, newLogin: boolean): void {
+	generated = { password, newLogin };
+	lastUserEditedPassword = password;
+	disarm();
+}
+
 /** A credential snapshot plus the password field it came from. */
 interface Captured {
 	username: string;
 	password: string;
 	newLogin: boolean;
 	field: HTMLInputElement | null;
+	generated?: boolean;
 }
 
 // A capture armed by a click on a submit control that drives no native `submit`
@@ -61,13 +73,29 @@ function startArmPolling(): void {
 }
 
 /** Builds the capture payload from the current form state; returns null when any capture gate trips. */
-function buildCapture(): Captured | null {
+function buildCapture(submitted?: HTMLFormElement): Captured | null {
 	if (lastUserEditedPassword === null) return null;
 	// Don't fire a save prompt mid-CAPTCHA-challenge.
 	if (hasInteractiveCaptcha()) return null;
 	// OTP field present with no edited password: this submit is the 2FA confirm step.
 	const login = detectLoginFields();
 	if (otpInputs().length > 0 && !login.password) return null;
+
+	const username =
+		login.username?.value ??
+		deepQuery<HTMLInputElement>('input[autocomplete~="username"]')?.value ??
+		"";
+	if (generated && lastUserEditedPassword === generated.password) {
+		const { password, newLogin } = generated;
+		// Only while the page still holds it: otherwise this submit belongs to some other form.
+		const holders = deepQueryAll<HTMLInputElement>("input").filter((el) => el.value === password);
+		// A search box or newsletter form on the same page is not the signup.
+		if (submitted && !holders.some((el) => el.form === submitted)) return null;
+		// A visible holder first: a hidden mirror would read as "form gone" while the form is still up.
+		const field = holders.find(isRendered) ?? holders[0];
+		if (!field) return null;
+		return { username, password, newLogin, field, generated: true };
+	}
 
 	const pwFields = deepQueryAll<HTMLInputElement>(
 		'input[type="password"]:not([readonly]):not([disabled])',
@@ -85,10 +113,6 @@ function buildCapture(): Captured | null {
 	// Suppress unchanged autofilled credentials: nothing to save.
 	if (capturePassword === getLastFilledPassword()) return null;
 
-	const username =
-		login.username?.value ??
-		deepQuery<HTMLInputElement>('input[autocomplete~="username"]')?.value ??
-		"";
 	// A signup form yields a NEW login even when one is already saved for the site; a login or
 	// change form does not (dedupe decides / rotates). See signup-detect.ts.
 	const newLogin = !!pwField && isAccountCreationForm(pwField);
@@ -98,16 +122,24 @@ function buildCapture(): Captured | null {
 /** Sends a captured credential and clears state so re-submits don't duplicate it. */
 function send(captured: Captured): void {
 	if (!captured.password) return;
+	disarm();
+	if (captured.generated && generated) {
+		// A suggestion stays pending, since a rejected signup is resubmitted with a corrected
+		// username. Only such a change is worth asking again.
+		if (generated.sentUsername === captured.username) return;
+		generated.sentUsername = captured.username;
+	} else {
+		lastUserEditedPassword = null;
+	}
 	safeSendMessage({
 		type: "CORNER_PROMPT_CAPTURE",
 		payload: {
 			username: captured.username,
 			password: captured.password,
 			newLogin: captured.newLogin,
+			...(captured.generated ? { generated: true } : {}),
 		},
 	});
-	lastUserEditedPassword = null;
-	disarm();
 }
 
 /** Drop any armed attempt and stop its polling. */
@@ -117,8 +149,8 @@ function disarm(): void {
 }
 
 /** Emits a capture event from the live form state. */
-function emitCapture(): void {
-	const captured = buildCapture();
+function emitCapture(submitted?: HTMLFormElement): void {
+	const captured = buildCapture(submitted);
 	if (!captured) return;
 	send(captured);
 }
@@ -133,8 +165,8 @@ export function notePasswordEdit(target: EventTarget | null): void {
 }
 
 /** A native form submit: emit synchronously, before the page can navigate away. */
-export function onSubmit(): void {
-	emitCapture();
+export function onSubmit(target?: EventTarget | null): void {
+	emitCapture(target instanceof HTMLFormElement ? target : undefined);
 }
 
 /** Enter inside a password field is an effective submit for forms with no native submit; capture on it. */
@@ -209,6 +241,7 @@ export function maybeEmitSpaSubmit(): void {
 
 /** Test seam: drop all pending capture state. */
 export function resetCaptureState(): void {
+	generated = null;
 	lastUserEditedPassword = null;
 	lastEditAt = 0;
 	disarm();
@@ -229,7 +262,7 @@ export function installCaptureListeners(doc: Document = document): void {
 
 	// Capture phase so we see the event before any handler that preventDefaults and
 	// rebuilds the DOM.
-	doc.addEventListener("submit", () => onSubmit(), true);
+	doc.addEventListener("submit", (e) => onSubmit(e.target), true);
 
 	// Formless SPA logins fire no submit event; the click is all we get.
 	doc.addEventListener(

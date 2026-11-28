@@ -9,17 +9,19 @@ export function updateLoginBody({
 	primaryAction,
 	primaryLabel,
 	candidates,
+	newUsername,
 }: {
 	title: string;
 	hostname: string;
 	primaryAction: string;
 	primaryLabel: string;
 	candidates: Candidate[];
+	newUsername?: string;
 }) {
 	let candidatesBody = html`
 		<div class="tp-row">
 			<div class="tp-label">${t("fieldAccount")}</div>
-			<div>${candidates[0]?.name ?? ""} <span style="color: rgba(235,235,245,0.55)">(${candidates[0]?.username ?? ""})</span></div>
+			<div>${candidates[0]?.name ?? ""} ${candidates[0]?.username ? [html`<span style="color: rgba(235,235,245,0.55)">(${candidates[0].username})</span>`] : []}</div>
 			<input type="hidden" name="tp-update-target" value="${candidates[0]?.id ?? ""}" />
 		</div>
 	`;
@@ -44,6 +46,17 @@ export function updateLoginBody({
 		`;
 	}
 
+	// Shown only when the update would change a username.
+	const usernameRow =
+		newUsername && candidates.some((c) => c.username !== newUsername)
+			? html`
+				<div class="tp-row">
+					<div class="tp-label">${t("fieldUsername")}</div>
+					<div>${newUsername}</div>
+				</div>
+			`
+			: "";
+
 	// candidatesBody is nested html; interpolate via a one-element array so the html helper
 	// joins it verbatim, since a bare html string would be escaped as a scalar (renders the
 	// markup as literal text). The helper treats arrays, not strings, as trusted nested html.
@@ -56,6 +69,7 @@ export function updateLoginBody({
 			<button class="tp-close" data-tp-action="dismiss" aria-label="Dismiss">×</button>
 		</div>
 		${[candidatesBody]}
+		${[usernameRow]}
 		<div class="tp-actions">
 			<button class="tp-btn tp-btn-primary" data-tp-action="${primaryAction}" ${candidates.length > 1 ? "disabled" : ""}>${primaryLabel}</button>
 			<button class="tp-btn" data-tp-action="save-new" title="${t("saveAsNewHint")}">${t("saveAsNew")}</button>

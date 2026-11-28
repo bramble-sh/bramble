@@ -367,3 +367,37 @@ describe("CORNER_FIELD relay", () => {
 		expect((await silent.send(OPEN, fieldSender(5))).resp).toEqual({ ok: false, error: "no card" });
 	});
 });
+
+describe("a suggested password captured a second time", () => {
+	const capture = (username: string, password = "pw1") => ({
+		type: "CORNER_PROMPT_CAPTURE",
+		payload: { username, password, newLogin: true, generated: true },
+	});
+
+	it("says nothing when that login is already saved", async () => {
+		const bg = await unlocked();
+		const { resp } = await bg.send(capture("alice"), pageSender("example.com", 5));
+		expect(resp).toEqual({ ok: true, data: null });
+		expect(bg.state.session["capture.pending.example.com"]).toBeUndefined();
+	});
+
+	it("says nothing when it is saved and the submit carries no username", async () => {
+		const bg = await unlocked();
+		const { resp } = await bg.send(capture(""), pageSender("example.com", 5));
+		expect(resp).toEqual({ ok: true, data: null });
+	});
+
+	it("offers to update the saved login when a username has appeared since", async () => {
+		const bg = await unlocked();
+		const { resp } = await bg.send(capture("alice@new.example"), pageSender("example.com", 5));
+		expect(resp.data.kind).toBe("update-login");
+		expect(resp.data.candidates).toEqual([{ id: "login1", name: "Example", username: "alice" }]);
+		expect(resp.data.newUsername).toBe("alice@new.example");
+	});
+
+	it("still offers a new login for an unsaved signup beside an existing one", async () => {
+		const bg = await unlocked();
+		const { resp } = await bg.send(capture("bob", "fresh-pw"), pageSender("example.com", 5));
+		expect(resp.data).toMatchObject({ kind: "save-login", username: "bob" });
+	});
+});

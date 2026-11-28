@@ -12,6 +12,7 @@ vi.mock("./lifecycle", () => ({
 
 const {
 	maybeCommitCapture,
+	noteGeneratedPassword,
 	notePasswordEdit,
 	onPasswordEnter,
 	onSubmit,
@@ -238,5 +239,96 @@ describe("existing submit paths still emit synchronously", () => {
 		document.getElementById("pass")?.remove();
 		maybeCommitCapture();
 		expect(captures()).toHaveLength(1);
+	});
+});
+
+describe("a suggested password is captured again on submit", () => {
+	let user: HTMLInputElement;
+	let pass: HTMLInputElement;
+
+	beforeEach(() => {
+		document.body.innerHTML = `
+			<form id="f">
+				<input id="user" name="email" type="email" autocomplete="email" />
+				<input id="pass" name="password" type="password" autocomplete="off" />
+				<input id="confirm" name="confirm" type="password" autocomplete="off" />
+				<button type="submit">Create account</button>
+			</form>`;
+		user = document.getElementById("user") as HTMLInputElement;
+		pass = document.getElementById("pass") as HTMLInputElement;
+		pass.value = "Sugg3sted-Pw";
+		(document.getElementById("confirm") as HTMLInputElement).value = "Sugg3sted-Pw";
+		noteGeneratedPassword("Sugg3sted-Pw", true);
+		user.value = "me@example.com";
+	});
+
+	it("carries the username typed after the suggestion was taken", () => {
+		onSubmit();
+		expect(captures()).toEqual([
+			{ username: "me@example.com", password: "Sugg3sted-Pw", newLogin: true, generated: true },
+		]);
+	});
+
+	it("captures again when a rejected signup is resubmitted", () => {
+		onSubmit();
+		user.value = "other@example.com";
+		onSubmit();
+		expect(captures().map((c) => c.username)).toEqual(["me@example.com", "other@example.com"]);
+	});
+
+	it("does not ask again for a resubmit with the same username", () => {
+		onSubmit();
+		onSubmit();
+		expect(captures()).toHaveLength(1);
+	});
+
+	it("sends once when Enter also submits the form", () => {
+		onPasswordEnter("Enter", pass);
+		onSubmit(document.getElementById("f"));
+		expect(captures()).toHaveLength(1);
+	});
+
+	it("asks again for the same username after the suggestion is taken anew", () => {
+		onSubmit();
+		noteGeneratedPassword("Sugg3sted-Pw", true);
+		onSubmit();
+		expect(captures()).toHaveLength(2);
+	});
+
+	it("ignores another form on the page, before and after the signup", () => {
+		document.body.insertAdjacentHTML("beforeend", `<form id="search"><input name="q" /></form>`);
+		const search = document.getElementById("search") as HTMLFormElement;
+		const submit = (form: HTMLElement) =>
+			form.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+		submit(search);
+		expect(captures()).toHaveLength(0);
+		submit(document.getElementById("f") as HTMLElement);
+		submit(search);
+		expect(captures()).toHaveLength(1);
+	});
+
+	it("stays quiet once no field holds the suggestion", () => {
+		document.body.innerHTML = `<form><input type="password" value="something-else" /></form>`;
+		onSubmit();
+		expect(captures()).toHaveLength(0);
+	});
+
+	it("gives way to a password the user types over it", () => {
+		pass.value = "my-own-password";
+		(document.getElementById("confirm") as HTMLInputElement).remove();
+		notePasswordEdit(pass);
+		onSubmit();
+		expect(captures()).toHaveLength(1);
+		expect(captures()[0]).not.toHaveProperty("generated");
+		expect(captures()[0]?.password).toBe("my-own-password");
+	});
+
+	it("does not take a hidden mirror of the password as the form having gone", () => {
+		document
+			.getElementById("f")
+			?.insertAdjacentHTML("afterbegin", `<input style="display:none" value="Sugg3sted-Pw" />`);
+		onSubmitControlClick(document.querySelector("button"));
+		maybeCommitCapture();
+		expect(captures()).toHaveLength(0);
 	});
 });

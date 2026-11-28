@@ -47,6 +47,8 @@ interface PendingCapture {
 	// Set by a signup capture: this is a brand-new login, so never fold it into an existing
 	// entry even if one is saved for the site (dedupe matches on hostname alone).
 	newLogin?: boolean;
+	// Set when the password is the picker's suggestion, which is unique enough to identify a login.
+	generated?: boolean;
 }
 
 interface CornerHandoff {
@@ -80,8 +82,18 @@ async function clearPendingCapture(etld1: string): Promise<void> {
 
 /** Dedupe outcome for a capture, forcing a fresh save when it's flagged as a new login (signup). */
 function captureOutcome(capture: PendingCapture): DedupeOutcome {
-	if (capture.newLogin) return { kind: "save" };
-	return dedupeCapture(capture.hostname, capture.username, capture.password, capture.port);
+	if (capture.newLogin && !capture.generated) return { kind: "save" };
+	const outcome = dedupeCapture(capture.hostname, capture.username, capture.password, capture.port);
+	if (!capture.generated) return outcome;
+	if (outcome.kind === "exact") return outcome;
+	if (outcome.kind === "update") {
+		const saved = outcome.candidates.find((c) => c.password === capture.password);
+		// Already saved when the suggestion was taken; only a username typed since can differ.
+		if (saved) {
+			return capture.username ? { kind: "update", candidates: [saved] } : { kind: "exact" };
+		}
+	}
+	return capture.newLogin ? { kind: "save" } : outcome;
 }
 
 function buildCornerPayload(
@@ -112,6 +124,7 @@ function buildCornerPayload(
 			username: c.username,
 		})),
 		newPassword: capture.password,
+		newUsername: capture.username,
 	};
 	return payload;
 }
@@ -292,10 +305,11 @@ async function cornerPromptCapture(
 		}
 	} catch {}
 	if (!hostname) return { ok: false, error: "no verifiable origin on sender" };
-	const { username, password, newLogin } = message.payload as {
+	const { username, password, newLogin, generated } = message.payload as {
 		username: string;
 		password: string;
 		newLogin?: boolean;
+		generated?: boolean;
 	};
 	if (!password) return { ok: true, data: null };
 	const etld1 = registrableDomain(hostname);
@@ -308,6 +322,7 @@ async function cornerPromptCapture(
 		password,
 		capturedAt: Date.now(),
 		newLogin: newLogin === true,
+		generated: generated === true,
 	};
 	const dispatched = await dispatchCornerPromptForCapture(capture, sender.tab?.id);
 	return { ok: true, data: dispatched };

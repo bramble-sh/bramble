@@ -313,3 +313,48 @@ describe("update card with two logins for the site", () => {
 		expect(h.sent).toEqual([]);
 	});
 });
+
+describe("save card survives the page replacing its body", () => {
+	const save = {
+		kind: "save-login" as const,
+		promptId: "p9",
+		hostname: "example.com",
+		locked: false,
+		username: "alice",
+		password: "pw",
+	};
+	const CARD = "#bramble-corner-prompt";
+	const flush = () => vi.advanceTimersByTimeAsync(0);
+	const swapBody = async () => {
+		document.body.replaceWith(document.createElement("body"));
+		await flush();
+	};
+
+	it("comes back after body is replaced or rewritten", async () => {
+		mount(save);
+		await swapBody();
+		expect(document.querySelector(CARD)).not.toBeNull();
+		document.body.innerHTML = "<h1>Welcome</h1>";
+		await flush();
+		expect(document.querySelector(CARD)).not.toBeNull();
+	});
+
+	it("stays gone once the user has answered", async () => {
+		const root = mount(save);
+		root.querySelector<HTMLElement>('[data-tp-action="dismiss"]')?.click();
+		await swapBody();
+		expect(document.querySelector(CARD)).toBeNull();
+	});
+
+	it("gives up on a page that keeps removing it", async () => {
+		mount(save);
+		for (let i = 0; i < 6; i++) await swapBody();
+		expect(document.querySelector(CARD)).toBeNull();
+	});
+
+	it("leaves a passkey card where the page put it", async () => {
+		mount();
+		await swapBody();
+		expect(document.querySelector(CARD)).toBeNull();
+	});
+});

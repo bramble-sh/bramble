@@ -44,6 +44,19 @@ let pendingFlush: { n: number; done: () => void } | null = null;
 // A save waiting on the frame's text; the card takes no other click until it lands.
 let saving = false;
 
+// A page that swaps out <body> after signup takes the card with it, so put it back until answered.
+// Capped, or a page that keeps removing it would loop with us forever.
+const MAX_REMOUNTS = 5;
+let remounts = 0;
+const remounter = new MutationObserver(() => {
+	if (!cornerPromptEl || cornerPromptEl.isConnected || !document.body) return;
+	if (++remounts > MAX_REMOUNTS) {
+		remounter.disconnect();
+		return;
+	}
+	document.body.appendChild(cornerPromptEl);
+});
+
 // Passkey consent counts only on a card the user can see, and not in its first moments (a click
 // aimed at whatever sat there before): a page could otherwise fade or cover it under the cursor.
 const PASSKEY_CONSENT = new Set(["passkey-approve", "passkey-pick"]);
@@ -54,6 +67,7 @@ function consentClickCounts(): boolean {
 }
 
 function removeCornerPrompt(): void {
+	remounter.disconnect();
 	if (cornerPromptEl) {
 		cornerPromptEl.remove();
 		cornerPromptEl = null;
@@ -108,6 +122,7 @@ function buildUpdateLoginBody(p: Extract<CornerPromptPayload, { kind: "update-lo
 		primaryAction,
 		primaryLabel,
 		candidates: p.candidates,
+		newUsername: p.newUsername,
 	});
 }
 
@@ -378,6 +393,11 @@ export function handleCornerPromptShow(payload: CornerPromptPayload): void {
 	cornerShadow = shadow;
 	cornerShownAt = Date.now();
 	document.body.appendChild(root);
+	// Passkey cards are left alone: their consent rules assume the card was never moved.
+	if (payload.kind === "save-login" || payload.kind === "update-login") {
+		remounts = 0;
+		remounter.observe(document, { childList: true, subtree: true });
+	}
 }
 
 // Clicking outside the card closes the overflow menu but keeps the card (so the
