@@ -1,0 +1,52 @@
+---
+title: "Hello Windows, my old friend"
+description: "The Bramble desktop app now runs on Windows 10 and 11: a per-user installer with no administrator rights, signed file by file as Webvana Inc., with the quick-access panel, browser filling, sync and backups."
+pubDate: 2026-11-28
+---
+
+Ever since the desktop app came out for macOS and Linux, one question has come up more than any
+other: when does it come to Windows? Since 0.23.0, it has. The desktop app now runs on **Windows 10
+and 11**.
+
+## What you get
+
+The same app as on a Mac or Linux:
+
+- **A panel over everything else.** Ctrl+Shift+Space brings up a search bar on top of whatever you
+  were doing. Find a login, copy the password or its 2FA code (Ctrl+T), or fill it into your
+  browser.
+- **It fills your browser.** [Link it](/docs/link-desktop-app) with the Bramble extension in
+  Chrome, Edge, Brave or Firefox, and the panel fills the page in front of you.
+- **An always-on sync hub.** Leave it in the system tray and your other devices always have
+  something to sync with. With a [mailbox](/docs/sync-through-the-mailbox), they don't even need
+  to be on at the same time.
+- **Backups that run while the vault is locked**, to your own S3 bucket or WebDAV server, on your
+  schedule.
+- **Kept out of screenshots, screen sharing and Recall.** [Block screenshots](/docs/block-screenshots)
+  is on from the start.
+
+## Installing it
+
+Download the installer from [bramble.sh](/) and run it. It installs Bramble for your account only,
+so it doesn't need administrator rights, and it keeps itself up to date from then on.
+
+## Signed, file by file
+
+Windows names **Webvana Inc.**, the company behind Bramble, as the publisher. The installer is built
+by GitHub Actions from this repository's main branch and signed with Azure Artifact Signing, with no
+signing secret stored anywhere. Not only the installer: the app, its browser helper, the uninstaller
+and every other program inside it carry the same signature, so Windows knows who made each one,
+and Smart App Control finds no unsigned program to block.
+
+To check it yourself, right-click any of them, choose **Properties**, then **Digital Signatures**.
+How a signed build is made is in our [code signing policy](/code-signing).
+
+## Not there yet
+
+- **Windows Hello.** On Windows, the desktop app unlocks with your master password for now. The
+  browser extension already [unlocks with Windows Hello](/docs/unlock-methods).
+- **Bramble as a passkey provider on Windows** is coming soon, so Windows and your apps can save
+  and use the passkeys in your vault.
+
+It's Bramble's first Windows release, so if you notice any problems or have any feedback, tell us
+on [GitHub](https://github.com/bramble-sh/bramble/issues) or at support@bramble.sh.
