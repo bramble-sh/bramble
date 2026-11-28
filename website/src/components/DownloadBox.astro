@@ -69,20 +69,17 @@ const appImage = DOWNLOADS.appimage
 	? { href: DOWNLOADS.appimage, label: "Download the AppImage" }
 	: { href: DESKTOP_RELEASES, label: "Open the releases page", external: true };
 
-// Windows is different: it is listed only once a release actually carries an installer, rather
-// than shown with the release page as a fallback. There is nothing for Windows on that page yet,
-// so the fallback would send the single largest group of visitors to look for a file that is not
-// there. Driven off the update manifest, so the entry appears on its own the moment a release
-// publishes one and nothing here has to be remembered on the day.
+// The same for Windows: a release cut with --skip=windows has no installer, and the releases
+// page holds the newest one that does.
 const windowsInstaller = DOWNLOADS.windows
 	? { href: DOWNLOADS.windows, label: "Download the installer" }
-	: null;
+	: { href: DESKTOP_RELEASES, label: "Open the releases page", external: true };
 
 const categories: Category[] = [
 	{
 		id: "desktop",
 		label: "Desktop",
-		hint: windowsInstaller ? "macOS, Windows and Linux" : "macOS and Linux",
+		hint: "macOS, Windows and Linux",
 		icon: DeviceDesktop,
 		options: [
 			{
@@ -99,22 +96,18 @@ const categories: Category[] = [
 				meta: DOWNLOADS.macos ? `Version ${DESKTOP_VERSION}` : undefined,
 				alt: { shell: BREW_INSTALL },
 			},
-			...(windowsInstaller
-				? [
-						{
-							id: "windows",
-							label: "Windows",
-							icon: BrandWindows,
-							title: "Windows",
-							body: "A per-user installer for Windows 10 and 11, so it needs no administrator rights. It checks for updates and installs them itself.",
-							action: windowsInstaller,
-							meta: `Version ${DESKTOP_VERSION}`,
-							// Said here because it is the moment someone wonders why the publisher is not
-							// "Bramble". The full policy is linked from the footer.
-							note: "Windows names Webvana Inc., the company behind Bramble, as the publisher.",
-						},
-					]
-				: []),
+			{
+				id: "windows",
+				label: "Windows",
+				icon: BrandWindows,
+				title: "Windows",
+				body: "A per-user installer for Windows 10 and 11, so it needs no administrator rights. It checks for updates and installs them itself.",
+				action: windowsInstaller,
+				meta: DOWNLOADS.windows ? `Version ${DESKTOP_VERSION}` : undefined,
+				// Said here because it is the moment someone wonders why the publisher is not
+				// "Bramble". The full policy is linked from the footer.
+				note: "Windows names Webvana Inc., the company behind Bramble, as the publisher.",
+			},
 			{
 				id: "debian",
 				label: "Debian / Ubuntu",
@@ -290,18 +283,6 @@ const tab =
 								);
 							})}
 						</div>
-
-						{/* Revealed by the script. Windows gets no build, and saying so beats a list
-						    with nothing on it for them. */}
-						{category.id === "desktop" && !windowsInstaller && (
-							<p
-								class="mt-3 px-3 text-xs text-muted-foreground text-pretty"
-								data-windows-note
-								hidden
-							>
-								No Windows build yet. The browser extension works there today.
-							</p>
-						)}
 					</div>
 				))
 			}
@@ -447,10 +428,6 @@ const tab =
 				"browser",
 				"desktop",
 			]);
-		}
-		if (os === "windows") {
-			const note = root.querySelector<HTMLElement>("[data-windows-note]");
-			if (note) note.hidden = false;
 		}
 
 		// "Add to Brave" on the panel for the visitor's own browser engine, and only that one:

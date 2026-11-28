@@ -47,8 +47,8 @@ export const DOWNLOADS = {
 	/**
 	 * Also straight out of the manifest, and for a better reason than the AppImage: on Windows
 	 * the installer IS the updater artifact, so this is not merely a file that is known to exist,
-	 * it is the same one an installed app downloads to update itself. Undefined before the first
-	 * Windows release.
+	 * it is the same one an installed app downloads to update itself. Undefined when the latest
+	 * release skipped Windows.
 	 */
 	windows: platforms["windows-x86_64"]?.url,
 } as const;

@@ -12,10 +12,10 @@ export type PagesContext = {
 };
 
 /** Platforms that ship installers of their own, and so have download counts. */
-export type DownloadPlatform = "android" | "macos" | "linux";
+export type DownloadPlatform = "android" | "macos" | "windows" | "linux";
 
 /** Platforms that are released under their own tag, and so have a version. */
-export type ReleasePlatform = "android" | "desktop" | "windows";
+export type ReleasePlatform = "android" | "desktop";
 
 /** `url` is the release page; `installer` is the file itself, where the platform has one. */
 export type Latest = {
@@ -52,6 +52,8 @@ export const RELEASES_URL = `https://github.com/${REPO}/releases`;
 const INSTALLERS: Record<DownloadPlatform, RegExp> = {
 	android: /\.apk$/i,
 	macos: /\.dmg$/i,
+	// Also the updater's download, so like the AppImage it counts updates as well as installs.
+	windows: /-setup\.exe$/i,
 	linux: /\.(appimage|deb|rpm)$/i,
 };
 
@@ -59,18 +61,17 @@ const INSTALLERS: Record<DownloadPlatform, RegExp> = {
 const TAGS: Record<ReleasePlatform, RegExp> = {
 	android: /^(.+)-android$/i,
 	desktop: /^(.+)-desktop$/i,
-	// Windows ships inside a desktop release: the newest one that carries its installer.
-	windows: /^(.+)-desktop$/i,
 };
 
-const WINDOWS_INSTALLER = /-setup\.exe$/i;
-
-// v2: a cached v1 snapshot has no installer, so it is not read back as one.
+// v3: a cached v2 snapshot has no Windows count, so it is not read back as one.
 export const snapshot = (env: Env): Promise<Snapshot | null> =>
-	edgeCached(env, "releases-v2", () => readReleases(env));
+	edgeCached(env, "releases-v3", () => readReleases(env));
 
 async function readReleases(env: Env): Promise<Snapshot> {
-	const result: Snapshot = { downloads: { android: 0, macos: 0, linux: 0 }, latest: {} };
+	const result: Snapshot = {
+		downloads: { android: 0, macos: 0, windows: 0, linux: 0 },
+		latest: {},
+	};
 	const headers: Record<string, string> = {
 		Accept: "application/vnd.github+json",
 		"X-GitHub-Api-Version": "2022-11-28",
@@ -92,16 +93,10 @@ async function readReleases(env: Env): Promise<Snapshot> {
 				const version = release.tag_name?.match(TAGS[platform])?.[1];
 				if (version && !result.latest[platform]) {
 					const installer =
-						platform === "windows"
-							? WINDOWS_INSTALLER
-							: platform in INSTALLERS
-								? INSTALLERS[platform as DownloadPlatform]
-								: undefined;
+						platform in INSTALLERS ? INSTALLERS[platform as DownloadPlatform] : undefined;
 					const file = installer
 						? release.assets?.find((a) => a.name && installer.test(a.name))
 						: undefined;
-					// A desktop release cut with --skip=windows is not a Windows release.
-					if (platform === "windows" && !file) continue;
 					result.latest[platform] = {
 						tag: release.tag_name as string,
 						version,
